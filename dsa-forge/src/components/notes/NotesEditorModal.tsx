@@ -140,7 +140,7 @@ function markdownToHtml(md: string): string {
       .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
       .replace(
         /&lt;mark&gt;(.*?)&lt;\/mark&gt;/gi,
-        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline">$1</code>'
+        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md">$1</code>'
       );
 
     return safe
@@ -149,7 +149,7 @@ function markdownToHtml(md: string): string {
       .replace(/\*([^*]+?)\*/g, "<i>$1</i>")
       .replace(
         /`([^`]+)`/g,
-        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline">$1</code>'
+        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md">$1</code>'
       );
   };
 
@@ -519,6 +519,38 @@ export function NotesEditorModal({
 
   // Handle typing & content change without triggering ANY React re-renders (zero thread blocking)
   const handleInput = () => {
+    // 0. Clean up any zero-width space in prime-highlight elements that have real text
+    if (editorRef.current) {
+      const highlights = editorRef.current.querySelectorAll(".prime-highlight");
+      highlights.forEach((hl) => {
+        if (hl.childNodes.length === 1 && hl.firstChild?.nodeType === Node.TEXT_NODE) {
+          const tNode = hl.firstChild as Text;
+          if (tNode.data.includes("\u200B") && tNode.data.length > 1) {
+            const sel = window.getSelection();
+            let currentOffset = -1;
+            let isCurrentNode = false;
+            if (sel && sel.rangeCount > 0) {
+              const r = sel.getRangeAt(0);
+              if (r.startContainer === tNode) {
+                isCurrentNode = true;
+                currentOffset = r.startOffset;
+              }
+            }
+            const zwsIndex = tNode.data.indexOf("\u200B");
+            tNode.data = tNode.data.replace(/\u200B/g, "");
+            if (isCurrentNode && sel && currentOffset >= 0) {
+              const newOffset = zwsIndex < currentOffset ? Math.max(0, currentOffset - 1) : currentOffset;
+              const newR = document.createRange();
+              newR.setStart(tNode, Math.min(newOffset, tNode.data.length));
+              newR.collapse(true);
+              sel.removeAllRanges();
+              sel.addRange(newR);
+            }
+          }
+        }
+      });
+    }
+
     // 1. Direct DOM update for word count (0ms, 0 React renders)
     if (wordCountRef.current && editorRef.current) {
       const text = editorRef.current.innerText || "";
@@ -715,7 +747,7 @@ export function NotesEditorModal({
 
     // CASE 1: Cursor or selection is ALREADY inside a highlight -> UNAPPLY or EXIT
     const highlightClasses =
-      "prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline";
+      "prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md";
 
     if (existingHighlight) {
       if (range.collapsed) {
@@ -730,11 +762,21 @@ export function NotesEditorModal({
         }
 
         // Jump cursor out directly after the highlight element to resume typing normal text
-        const newRange = document.createRange();
-        newRange.setStartAfter(existingHighlight);
-        newRange.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(newRange);
+        if (!existingHighlight.nextSibling) {
+          const emptyText = document.createTextNode("\u200B");
+          existingHighlight.parentNode?.appendChild(emptyText);
+          const newRange = document.createRange();
+          newRange.setStart(emptyText, 1);
+          newRange.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+        } else {
+          const newRange = document.createRange();
+          newRange.setStartAfter(existingHighlight);
+          newRange.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+        }
         checkActiveFormats();
         return;
       } else {
@@ -852,12 +894,18 @@ export function NotesEditorModal({
       const blob = new Blob([fullContent], { type: "text/markdown;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
+      a.href = url;
+      a.style.display = "none";
       const safeTitle = (problemTitle || "notes").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       a.download = `${problemExternalId ? `${problemExternalId}-` : ""}${safeTitle}-notes.md`;
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(() => {
+        if (a.parentNode) {
+          a.parentNode.removeChild(a);
+        }
+        URL.revokeObjectURL(url);
+      }, 1000);
       setIsExportOpen(false);
     } catch (err) {
       console.error("[NotesEditorModal] Export MD error:", err);
@@ -878,12 +926,18 @@ export function NotesEditorModal({
       const blob = new Blob([fullContent], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
+      a.href = url;
+      a.style.display = "none";
       const safeTitle = (problemTitle || "notes").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       a.download = `${problemExternalId ? `${problemExternalId}-` : ""}${safeTitle}-notes.txt`;
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setTimeout(() => {
+        if (a.parentNode) {
+          a.parentNode.removeChild(a);
+        }
+        URL.revokeObjectURL(url);
+      }, 1000);
       setIsExportOpen(false);
     } catch (err) {
       console.error("[NotesEditorModal] Export TXT error:", err);

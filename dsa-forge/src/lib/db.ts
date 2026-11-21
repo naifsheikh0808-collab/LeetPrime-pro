@@ -9,7 +9,7 @@ import { TIMEFRAME_LABELS } from "./constants";
 import type { Pattern, PatternQuestion, Company, Problem, UserProgress, Timeframe, Difficulty, ProgressStatus } from "./types";
 import { slugify } from "./utils";
 import { auth, db as firestoreDb, isFirebaseConfigured } from "./firebase";
-import { doc, setDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
+import { doc, setDoc, collection, getDocs, getDoc, deleteDoc, deleteField } from "firebase/firestore";
 import {
   getPatternProblems,
   matchesPatternValue,
@@ -423,12 +423,26 @@ export async function saveProblemNotes(problemId: string, notes: string): Promis
   );
   window.dispatchEvent(new Event(PROGRESS_UPDATED_EVENT));
 
-  // 2. If authenticated with Firebase, also sync to Firestore in background
+  // 2. If authenticated with Firebase, sync to Firestore in BOTH the main user document AND subcollection
   const currentUser = auth?.currentUser;
   if (currentUser && firestoreDb && isFirebaseConfigured) {
     try {
+      const userDocRef = doc(firestoreDb, "users", currentUser.uid);
       const noteDocRef = doc(firestoreDb, "users", currentUser.uid, "notes", canonicalId);
+
       if (notes && notes.trim()) {
+        // A. Primary: Update main user doc so notes sync across all devices even without subcollection rules
+        await setDoc(
+          userDocRef,
+          {
+            [`notes.${canonicalId}`]: notes,
+            [`progress.${canonicalId}.notes`]: notes,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ).catch((err) => console.warn("[Firestore] Main doc note sync error:", err));
+
+        // B. Secondary: Also save to notes subcollection for dedicated document storage
         await setDoc(
           noteDocRef,
           {
@@ -437,9 +451,18 @@ export async function saveProblemNotes(problemId: string, notes: string): Promis
             updatedAt: new Date().toISOString(),
           },
           { merge: true }
-        );
+        ).catch((err) => console.warn("[Firestore] Subcollection note sync error:", err));
       } else {
-        await deleteDoc(noteDocRef);
+        await deleteDoc(noteDocRef).catch(() => {});
+        await setDoc(
+          userDocRef,
+          {
+            [`notes.${canonicalId}`]: deleteField(),
+            [`progress.${canonicalId}.notes`]: deleteField(),
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        ).catch(() => {});
       }
     } catch (err) {
       console.warn("[Firestore] Failed to save note to cloud:", err);
@@ -448,26 +471,93 @@ export async function saveProblemNotes(problemId: string, notes: string): Promis
 }
 
 /**
- * Loads all notes for a user from Firestore cloud and seeds the 0ms in-memory cache and local store.
+ * Loads all notes for a user from Firestore cloud (both main doc and subcollection)
+ * and seeds the 0ms in-memory cache and local store.
  */
 export async function loadUserNotesFromCloud(uid: string): Promise<Record<string, string>> {
   if (!firestoreDb || !isFirebaseConfigured) return {};
   try {
-    const notesColl = collection(firestoreDb, "users", uid, "notes");
-    const snap = await getDocs(notesColl);
     const cloudNotes: Record<string, string> = {};
-    snap.forEach((docSnap) => {
-      const data = docSnap.data();
-      if (data?.content !== undefined) {
-        cloudNotes[docSnap.id] = data.content;
-      }
-    });
 
-    // Merge cloud notes with local notes store and runtime cache
+    // 1. Fetch from subcollection if accessible
+    try {
+      const notesColl = collection(firestoreDb, "users", uid, "notes");
+      const snap = await getDocs(notesColl);
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data?.content !== undefined && data.content !== null) {
+          cloudNotes[resolveProblemId(docSnap.id)] = data.content;
+        }
+      });
+    } catch (err) {
+      console.warn("[Firestore] Subcollection read error:", err);
+    }
+
+    // 2. Fetch from main user document (contains notes map and progress notes)
+    const userDocRef = doc(firestoreDb, "users", uid);
+    try {
+      const userDocSnap = await getDoc(userDocRef);
+      if (userDocSnap.exists()) {
+        const userData = userDocSnap.data();
+        const mainNotes = (userData?.notes || {}) as Record<string, string>;
+        for (const [k, v] of Object.entries(mainNotes)) {
+          if (v && typeof v === "string" && !cloudNotes[resolveProblemId(k)]) {
+            cloudNotes[resolveProblemId(k)] = v;
+          }
+        }
+        const progress = (userData?.progress || {}) as Record<string, UserProgress>;
+        for (const [k, v] of Object.entries(progress)) {
+          if (v?.notes && typeof v.notes === "string" && !cloudNotes[resolveProblemId(k)]) {
+            cloudNotes[resolveProblemId(k)] = v.notes;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[Firestore] Main user doc read error:", err);
+    }
+
+    // 3. Merge cloud notes with local notes store and runtime cache
     const localNotes = getAllStoredNotes();
-    const merged = { ...localNotes, ...cloudNotes };
+    const merged: Record<string, string> = {};
+
+    // First populate from local
+    for (const [k, v] of Object.entries(localNotes)) {
+      if (v) merged[resolveProblemId(k)] = v;
+    }
+    // Then overlay cloud (cloud takes precedence for cross-device consistency)
+    for (const [k, v] of Object.entries(cloudNotes)) {
+      if (v) merged[resolveProblemId(k)] = v;
+    }
+
     localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(merged));
     setAllNotesCache(merged);
+
+    // Also update local progress with merged notes
+    const local = loadProgress();
+    let progressModified = false;
+    for (const [k, noteContent] of Object.entries(merged)) {
+      if (local[k] && local[k].notes !== noteContent) {
+        local[k].notes = noteContent;
+        progressModified = true;
+      }
+    }
+    if (progressModified) {
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify(local));
+    }
+
+    // 4. Two-way sync: If this device has local notes not yet stored in cloud, upload them immediately!
+    const unuploadedKeys = Object.keys(localNotes).filter((k) => localNotes[k] && !cloudNotes[resolveProblemId(k)]);
+    if (unuploadedKeys.length > 0) {
+      const notesUpdatePayload: Record<string, any> = {};
+      for (const k of unuploadedKeys) {
+        const cid = resolveProblemId(k);
+        const val = localNotes[k];
+        notesUpdatePayload[`notes.${cid}`] = val;
+        notesUpdatePayload[`progress.${cid}.notes`] = val;
+      }
+      notesUpdatePayload.updatedAt = new Date().toISOString();
+      await setDoc(userDocRef, notesUpdatePayload, { merge: true }).catch(() => {});
+    }
 
     // DISPATCH EVENT SO ALL REACT COMPONENTS RE-RENDER WITH LOADED NOTES!
     window.dispatchEvent(new CustomEvent(NOTES_UPDATED_EVENT, { detail: { notesMap: merged } }));
@@ -481,7 +571,7 @@ export async function loadUserNotesFromCloud(uid: string): Promise<Record<string
 }
 
 /**
- * Migrates any local guest notes into Firestore cloud whenever a user logs in.
+ * Migrates any local notes into Firestore cloud whenever a user logs in.
  */
 export async function migrateGuestNotesToCloud(uid: string): Promise<void> {
   if (typeof window === "undefined" || !firestoreDb || !isFirebaseConfigured) return;
@@ -489,23 +579,35 @@ export async function migrateGuestNotesToCloud(uid: string): Promise<void> {
     const rawGuest = localStorage.getItem(GUEST_NOTES_KEY);
     const guestNotes: Record<string, string> = rawGuest ? JSON.parse(rawGuest) : {};
 
-    // Also check legacy progress for any notes
+    // Combine with all stored notes
+    const stored = getAllStoredNotes();
+    const combinedNotes: Record<string, string> = { ...guestNotes, ...stored };
+
+    // Also check local progress for any notes
     const local = loadProgress();
     for (const [k, v] of Object.entries(local)) {
-      if (v.notes && !guestNotes[k]) {
-        guestNotes[k] = v.notes;
+      if (v.notes && !combinedNotes[k]) {
+        combinedNotes[k] = v.notes;
       }
     }
 
-    const keys = Object.keys(guestNotes);
+    const keys = Object.keys(combinedNotes);
     if (keys.length === 0) return;
 
+    const userDocRef = doc(firestoreDb, "users", uid);
+    const mainDocPayload: Record<string, any> = {};
+
     for (const problemId of keys) {
-      const content = guestNotes[problemId];
-      if (content) {
+      const content = combinedNotes[problemId];
+      if (content && typeof content === "string" && content.trim()) {
         const canonicalId = resolveProblemId(problemId);
+        mainDocPayload[`notes.${canonicalId}`] = content;
+        mainDocPayload[`progress.${canonicalId}.notes`] = content;
+        notesCache[canonicalId] = content;
+
+        // Also write to subcollection in background
         const noteDocRef = doc(firestoreDb, "users", uid, "notes", canonicalId);
-        await setDoc(
+        setDoc(
           noteDocRef,
           {
             problemId: canonicalId,
@@ -513,25 +615,17 @@ export async function migrateGuestNotesToCloud(uid: string): Promise<void> {
             updatedAt: new Date().toISOString(),
           },
           { merge: true }
-        );
-        notesCache[canonicalId] = content;
+        ).catch(() => {});
       }
     }
 
-    // Clear guest notes key from browser storage
+    if (Object.keys(mainDocPayload).length > 0) {
+      mainDocPayload.updatedAt = new Date().toISOString();
+      await setDoc(userDocRef, mainDocPayload, { merge: true }).catch(() => {});
+    }
+
+    // Clear obsolete guest notes key from browser storage
     localStorage.removeItem(GUEST_NOTES_KEY);
-
-    // Strip notes from local progress to keep localStorage clean
-    let modified = false;
-    for (const k of Object.keys(local)) {
-      if (local[k].notes) {
-        delete local[k].notes;
-        modified = true;
-      }
-    }
-    if (modified) {
-      localStorage.setItem(PROGRESS_KEY, JSON.stringify(local));
-    }
   } catch (err) {
     console.warn("[Firestore] Failed to migrate guest notes to cloud:", err);
   }
@@ -558,7 +652,7 @@ export function updateProblemStatus(
   }
 
   const currentNote = notes !== undefined ? notes : getProblemNotes(canonicalId);
-  if (currentNote && !auth?.currentUser) {
+  if (currentNote) {
     updated.notes = currentNote;
   }
 

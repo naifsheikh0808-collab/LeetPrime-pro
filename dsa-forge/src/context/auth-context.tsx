@@ -21,6 +21,7 @@ import {
   loadUserNotesFromCloud,
   migrateGuestNotesToCloud,
   clearNotesCache,
+  getAllStoredNotes,
   GUEST_NOTES_KEY,
   PROGRESS_UPDATED_EVENT,
   type UserProgress,
@@ -175,12 +176,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const cleanGuestProgress = JSON.parse(JSON.stringify(guestProgress || {}));
             const guestPlan = loadPlan();
             const guestProfile = loadPlannerProfile();
+            const guestNotes = getAllStoredNotes();
 
             await setDoc(userDocRef, {
               displayName: currentUser.displayName ?? null,
               email: currentUser.email ?? null,
               photoURL: currentUser.photoURL ?? null,
               progress: cleanGuestProgress,
+              notes: guestNotes || {},
               studyPlan: guestPlan || null,
               plannerProfile: guestProfile || null,
               createdAt: new Date().toISOString(),

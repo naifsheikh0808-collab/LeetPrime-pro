@@ -43,7 +43,15 @@ function CollapsibleCodeBlock({
     >
       {/* Header with collapse toggle, language badge, line count, and copy button */}
       <div
-        onClick={() => setIsCollapsed(!isCollapsed)}
+        onClick={(e) => {
+          if (isCompact) {
+            // In compact preview mode on question page, do not toggle expansion;
+            // let the click bubble up to open the notes editor modal cleanly.
+            return;
+          }
+          e.stopPropagation();
+          setIsCollapsed(!isCollapsed);
+        }}
         className="flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b border-white/[0.08] cursor-pointer hover:bg-white/[0.07] transition-colors select-none"
       >
         <div className="flex items-center gap-2 min-w-0">
@@ -87,8 +95,8 @@ function CollapsibleCodeBlock({
         </button>
       </div>
 
-      {/* Code body (collapsible with Prime AI colorful syntax highlighting) */}
-      {!isCollapsed && (
+      {/* Code body (collapsible with Prime AI colorful syntax highlighting - only in full non-compact view) */}
+      {!isCollapsed && !isCompact && (
         <pre
           className={cn(
             "p-3.5 overflow-x-auto font-mono text-xs leading-relaxed select-text scrollbar-thin",
@@ -116,16 +124,21 @@ function normalizeNotesContent(content: string): string {
   if (!content) return "";
   let text = content;
 
-  // 1. Unescape HTML entities that may have been saved as entities
+  // 1. Unescape HTML entities that may have been saved as entities or escaped
   text = text
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
+    .replace(/&amp;/g, "&")
+    .replace(/&ast;/gi, "*")
+    .replace(/&#42;/g, "*")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\\([*_`~])/g, "$1"); // unescape escaped markdown symbols like \* or \_
 
-  // 2. Normalize paragraph and break tags into newlines for block parsing
+  // 2. Strip non-formatting HTML wrapper tags while normalizing paragraphs and breaks
   text = text
-    .replace(/<\/?(p|div)\b[^>]*>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n");
+    .replace(/<\/?(?:span|font|div)\b[^>]*>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/?p\b[^>]*>/gi, "\n");
 
   return text;
 }
@@ -148,10 +161,10 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
   // 3. <u>underline</u> (case-insensitive)
   // 4. __underline__
   // 5. **bold** or <b>bold</b> or <strong>bold</strong>
-  // 6. *italic* or <i>italic</i> or <em>italic</em>
+  // 6. *italic* or _italic_ or <i>italic</i> or <em>italic</em>
   // 7. O(...) complexity (non-backtracking)
   const tokenRegex =
-    /(`[^`]+`|<mark\b[^>]*>[\s\S]*?<\/mark>|<code\b[^>]*>[\s\S]*?<\/code>|<u\b[^>]*>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>|\*[^*]+\*|<(?:i|em)\b[^>]*>[\s\S]*?<\/(?:i|em)>|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/gi;
+    /(`[^`]+`|<mark\b[^>]*>[\s\S]*?<\/mark>|<code\b[^>]*>[\s\S]*?<\/code>|<u\b[^>]*>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>|\*[^*\r\n]+?\*|(?<!\w)_[^_\r\n]+?_(?!\w)|<(?:i|em)\b[^>]*>[\s\S]*?<\/(?:i|em)>|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/gi;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -222,15 +235,17 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
     // 4. Italic
     else if (
       (val.startsWith("*") && val.endsWith("*") && val.length > 2) ||
+      (val.startsWith("_") && val.endsWith("_") && val.length > 2) ||
       (lower.startsWith("<i") && lower.endsWith("</i>")) ||
       (lower.startsWith("<em") && lower.endsWith("</em>"))
     ) {
-      const inner = val.startsWith("*")
-        ? val.slice(1, -1)
-        : val.replace(/^<(?:i|em)\b[^>]*>/i, "").replace(/<\/(?:i|em)>$/i, "");
+      const inner =
+        val.startsWith("*") || val.startsWith("_")
+          ? val.slice(1, -1)
+          : val.replace(/^<(?:i|em)\b[^>]*>/i, "").replace(/<\/(?:i|em)>$/i, "");
       parts.push(
         <em key={key} className="text-amber-100/90 italic">
-          {renderInlineTokens(inner, depth + 1)}
+          {renderInlineTokens(inner.trim(), depth + 1)}
         </em>
       );
     }
@@ -315,9 +330,14 @@ function parseBlocks(markdown: string): Block[] {
     }
 
     // 4. Bullet list (- or * or •)
-    if (/^\s*[-*•]\s+/.test(line)) {
+    const isAsteriskLine = /^\s*\*+[^*]+\*+\s*$/.test(line);
+    if (!isAsteriskLine && /^\s*[-*•]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*[-*•]\s+/.test(lines[i])) {
+      while (
+        i < lines.length &&
+        !/^\s*\*+[^*]+\*+\s*$/.test(lines[i]) &&
+        /^\s*[-*•]\s+/.test(lines[i])
+      ) {
         items.push(lines[i].replace(/^\s*[-*•]\s+/, ""));
         i++;
       }
@@ -350,7 +370,7 @@ function parseBlocks(markdown: string): Block[] {
       !lines[i].trim().startsWith("```") &&
       !/^#{1,3}(?:\s|$)/.test(lines[i].trim()) &&
       !lines[i].trim().startsWith(">") &&
-      !/^\s*[-*•]\s+/.test(lines[i]) &&
+      (!/^\s*[-*•]\s+/.test(lines[i]) || /^\s*\*+[^*]+\*+\s*$/.test(lines[i])) &&
       !/^\s*\d+\.\s+/.test(lines[i])
     ) {
       paraLines.push(lines[i]);

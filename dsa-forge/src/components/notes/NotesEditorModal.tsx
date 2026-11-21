@@ -147,6 +147,7 @@ function markdownToHtml(md: string): string {
       .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
       .replace(/__(.+?)__/g, "<u>$1</u>")
       .replace(/\*([^*]+?)\*/g, "<i>$1</i>")
+      .replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "<i>$1</i>")
       .replace(
         /`([^`]+)`/g,
         '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">$1</code>'
@@ -430,6 +431,7 @@ function markdownToPlainText(md: string): string {
     .replace(/\*\*([^*]+)\*\*/g, "$1")
     .replace(/__(.+?)__/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/(?<!\w)_([^_]+)_(?!\w)/g, "$1")
     .replace(/<u>(.*?)<\/u>/gi, "$1")
     // Inline code / highlight badges
     .replace(/`([^`]+)`/g, "$1")

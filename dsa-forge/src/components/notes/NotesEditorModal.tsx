@@ -74,14 +74,14 @@ function extractCodeText(codeEl: HTMLElement): string {
       if (tag === "br") {
         text += "\n";
       } else if (tag === "div" || tag === "p") {
-        text += "\n" + (el.innerText || el.textContent || "");
+        text += "\n" + (el.textContent || "");
       } else {
-        text += el.innerText || el.textContent || "";
+        text += el.textContent || "";
       }
     }
   }
   if (!text) {
-    text = codeEl.innerText || codeEl.textContent || "";
+    text = codeEl.textContent || "";
   }
   return text.replace(/\r\n/g, "\n");
 }

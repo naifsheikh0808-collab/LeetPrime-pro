@@ -36,6 +36,7 @@ function CollapsibleCodeBlock({
 
   return (
     <div
+      onClick={(e) => e.stopPropagation()}
       className={cn(
         "my-2.5 rounded-xl border border-white/10 bg-[#080914] overflow-hidden shadow-lg transition-all",
         isCompact && "my-1 sm:my-1.5 rounded-lg border-white/[0.08] bg-white/[0.02] shadow-none"
@@ -44,20 +45,13 @@ function CollapsibleCodeBlock({
       {/* Header with collapse toggle, language badge, line count, and copy button */}
       <div
         onClick={(e) => {
-          if (isCompact) {
-            // In compact preview mode on question page, do not toggle expansion;
-            // let the click bubble up to open the notes editor modal cleanly.
-            return;
-          }
           e.stopPropagation();
           setIsCollapsed(!isCollapsed);
         }}
         className={cn(
-          "flex items-center justify-between px-3 py-1.5 bg-white/[0.04] transition-colors select-none",
-          !isCollapsed && !isCompact ? "border-b border-white/[0.08]" : "",
-          isCompact
-            ? "px-2 sm:px-2.5 py-1 sm:py-1.5 bg-white/[0.025] hover:bg-white/[0.05]"
-            : "cursor-pointer hover:bg-white/[0.07]"
+          "flex items-center justify-between px-3 py-1.5 bg-white/[0.04] cursor-pointer hover:bg-white/[0.07] transition-colors select-none",
+          !isCollapsed ? "border-b border-white/[0.08]" : "",
+          isCompact && "px-2 sm:px-2.5 py-1 sm:py-1.5 bg-white/[0.025] hover:bg-white/[0.05]"
         )}
       >
         <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
@@ -86,16 +80,14 @@ function CollapsibleCodeBlock({
           >
             {lineCount} {lineCount === 1 ? "line" : "lines"}
           </span>
-          {isCollapsed && (
-            <span
-              className={cn(
-                "text-zinc-400 italic truncate",
-                isCompact ? "hidden md:inline text-[10px] text-zinc-500" : "text-[10px]"
-              )}
-            >
-              · Click to expand
-            </span>
-          )}
+          <span
+            className={cn(
+              "text-zinc-500 italic truncate text-[10px]",
+              isCompact && "hidden sm:inline"
+            )}
+          >
+            {isCollapsed ? "· Click to expand" : "· Click to collapse"}
+          </span>
         </div>
 
         <button
@@ -121,12 +113,13 @@ function CollapsibleCodeBlock({
         </button>
       </div>
 
-      {/* Code body (collapsible with Prime AI colorful syntax highlighting - only in full non-compact view) */}
-      {!isCollapsed && !isCompact && (
+      {/* Code body (collapsible with Prime AI colorful syntax highlighting) */}
+      {!isCollapsed && (
         <pre
+          onClick={(e) => e.stopPropagation()}
           className={cn(
-            "p-3.5 overflow-x-auto font-mono text-xs leading-relaxed select-text scrollbar-thin",
-            isCompact && "p-2.5 text-[11px]"
+            "p-3.5 max-h-72 overflow-y-auto overflow-x-auto font-mono text-xs leading-relaxed select-text [scrollbar-width:thin] border-t border-white/[0.08] bg-[#070811]",
+            isCompact && "p-2.5 max-h-48 sm:max-h-56 text-[11px] border-t border-white/[0.06]"
           )}
         >
           <code>
@@ -158,7 +151,9 @@ function normalizeNotesContent(content: string): string {
     .replace(/&ast;/gi, "*")
     .replace(/&#42;/g, "*")
     .replace(/&nbsp;/g, " ")
-    .replace(/\\([*_`~])/g, "$1"); // unescape escaped markdown symbols like \* or \_
+    .replace(/\\([*_`~])/g, "$1") // unescape escaped markdown symbols like \* or \_
+    .replace(/\\<([a-z0-9]+)>/gi, "<$1>")
+    .replace(/\\<\//gi, "</");
 
   // 2. Normalize mixed markdown/HTML italic and underline combinations
   text = text

@@ -27,7 +27,7 @@ const MODEL_INFO = {
     provider: "Google AI",
     badge: "⚡",
     docsUrl: "https://aistudio.google.com/app/apikey",
-    docsLabel: "Get key ↗",
+    docsLabel: "Get Free Key ↗",
     keyPrefix: "AIza",
   },
   groq: {
@@ -36,7 +36,7 @@ const MODEL_INFO = {
     provider: "Groq Cloud",
     badge: "🚀",
     docsUrl: "https://console.groq.com/keys",
-    docsLabel: "Get key ↗",
+    docsLabel: "Get Free Key ↗",
     keyPrefix: "gsk_",
   },
 };

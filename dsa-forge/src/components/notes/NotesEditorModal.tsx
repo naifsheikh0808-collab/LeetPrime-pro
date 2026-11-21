@@ -36,11 +36,63 @@ function escapeHtml(str: string): string {
 }
 
 /**
+ * Extracts raw multiline text from a code DOM element without losing newlines.
+ */
+function extractCodeText(codeEl: HTMLElement): string {
+  let text = "";
+  for (const node of Array.from(codeEl.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.textContent || "";
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      if (tag === "br") {
+        text += "\n";
+      } else if (tag === "div" || tag === "p") {
+        text += "\n" + (el.innerText || el.textContent || "");
+      } else {
+        text += el.innerText || el.textContent || "";
+      }
+    }
+  }
+  if (!text) {
+    text = codeEl.innerText || codeEl.textContent || "";
+  }
+  return text.replace(/\r\n/g, "\n");
+}
+
+/**
+ * Generates interactive collapsible code block HTML for the WYSIWYG editor.
+ */
+function createCodeBlockHtml(code: string, lang = "cpp"): string {
+  const displayLang = lang || "code";
+  const lines = code.split("\n");
+  const lineCount = lines.length;
+  const escaped = escapeHtml(code);
+
+  return (
+    `<div class="code-block-container my-3 rounded-xl border border-white/10 bg-[#080914] overflow-hidden select-none" contenteditable="false" data-lang="${displayLang}">` +
+      `<div class="code-block-header flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b border-white/[0.08] text-xs text-zinc-400 cursor-pointer hover:bg-white/[0.07] transition-colors" data-action="toggle-collapse">` +
+        `<div class="flex items-center gap-2">` +
+          `<span class="code-chevron text-[11px] text-violet-400 font-bold">▼</span>` +
+          `<span class="code-lang-badge px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 text-[10px] font-mono font-bold uppercase">${displayLang}</span>` +
+          `<span class="code-line-count text-[11px] text-zinc-400 font-mono">${lineCount} ${lineCount === 1 ? "line" : "lines"}</span>` +
+        `</div>` +
+        `<div class="flex items-center gap-2">` +
+          `<span class="code-exit-btn text-[10px] text-violet-400 hover:text-violet-300 hover:underline cursor-pointer" data-action="exit-code" title="Exit code block and write notes below">Exit to notes ↓</span>` +
+        `</div>` +
+      `</div>` +
+      `<pre class="code-content p-3 text-xs font-mono text-cyan-200 leading-relaxed overflow-x-auto whitespace-pre outline-none select-text" contenteditable="true" spellcheck="false">${escaped}</pre>` +
+    `</div><p><br></p>`
+  );
+}
+
+/**
  * Converts Markdown string to HTML for the WYSIWYG contentEditable editor.
- * Accurately parses ```lang fenced code blocks, headings, lists, and inline styles.
+ * Accurately parses ```lang fenced code blocks into collapsible interactive blocks.
  */
 function markdownToHtml(md: string): string {
-  if (!md || !md.trim()) return "";
+  if (!md || !md.trim()) return "<p><br></p>";
   const trimmedMd = md.trim();
 
   // If already legacy HTML format without markdown fences, return directly
@@ -63,7 +115,7 @@ function markdownToHtml(md: string): string {
       .replace(/`([^`]+)`/g, "<code>$1</code>");
   };
 
-  const lines = trimmedMd.split("\n");
+  const lines = trimmedMd.split(/\r?\n/);
   const result: string[] = [];
   let inUl = false;
   let inOl = false;
@@ -80,10 +132,7 @@ function markdownToHtml(md: string): string {
       if (inCode) {
         // Close code block
         inCode = false;
-        const codeContent = escapeHtml(codeLines.join("\n"));
-        result.push(
-          `<pre class="code-block" data-lang="${codeLang}"><code>${codeContent}</code></pre>`
-        );
+        result.push(createCodeBlockHtml(codeLines.join("\n"), codeLang));
         codeLines = [];
         codeLang = "";
       } else {
@@ -135,24 +184,22 @@ function markdownToHtml(md: string): string {
   }
 
   if (inCode) {
-    const codeContent = escapeHtml(codeLines.join("\n"));
-    result.push(
-      `<pre class="code-block" data-lang="${codeLang}"><code>${codeContent}</code></pre>`
-    );
+    result.push(createCodeBlockHtml(codeLines.join("\n"), codeLang));
   }
   if (inUl) result.push("</ul>");
   if (inOl) result.push("</ol>");
 
-  return result.join("");
+  // Ensure editor ends with a normal paragraph for easy typing
+  const finalHtml = result.join("");
+  if (!finalHtml.endsWith("<p><br></p>") && !finalHtml.endsWith("</p>")) {
+    return finalHtml + "<p><br></p>";
+  }
+  return finalHtml;
 }
 
 /**
  * Converts WYSIWYG HTML back to clean, compact Markdown string for storage.
- * Uses DOM traversal to:
- * 1. Accurately preserve <pre><code> as ```lang code fences
- * 2. Never strip C++/Java generics like <int> inside code
- * 3. Never inject double newlines (\n\n) between adjacent paragraphs or code lines
- * 4. Respect deleted lines and empty paragraphs accurately
+ * Accurately extracts code from collapsible code containers without line loss.
  */
 function htmlToMarkdown(html: string): string {
   if (!html || !html.trim()) return "";
@@ -171,12 +218,19 @@ function htmlToMarkdown(html: string): string {
     const el = node as HTMLElement;
     const tag = el.tagName.toLowerCase();
 
-    // Code block (<pre>)
-    if (tag === "pre") {
-      const code = el.textContent || "";
+    // 1. Interactive collapsible code container
+    if (el.classList.contains("code-block-container")) {
+      const pre = el.querySelector(".code-content") as HTMLElement;
       const lang = el.getAttribute("data-lang") || "";
-      const normalizedCode = code.replace(/\r\n/g, "\n").trimEnd();
-      return `\n\`\`\`${lang}\n${normalizedCode}\n\`\`\`\n`;
+      const code = pre ? extractCodeText(pre) : "";
+      return `\n\`\`\`${lang}\n${code.trimEnd()}\n\`\`\`\n`;
+    }
+
+    // 2. Bare code block (<pre>)
+    if (tag === "pre") {
+      const code = extractCodeText(el);
+      const lang = el.getAttribute("data-lang") || "";
+      return `\n\`\`\`${lang}\n${code.trimEnd()}\n\`\`\`\n`;
     }
 
     // Inline code (not inside a pre)
@@ -325,7 +379,9 @@ export function NotesEditorModal({
       if (node.nodeType === Node.ELEMENT_NODE) {
         const el = node as HTMLElement;
         const tag = el.tagName.toLowerCase();
-        if (tag === "pre" || tag === "code") code = true;
+        if (el.classList.contains("code-block-container") || el.classList.contains("code-content") || tag === "pre" || tag === "code") {
+          code = true;
+        }
         if (tag === "h1") h1 = true;
         if (tag === "h2") h2 = true;
         if (tag === "b" || tag === "strong") bold = true;
@@ -493,35 +549,221 @@ export function NotesEditorModal({
     }
   };
 
-  // Toggle code block formatting
-  const toggleCodeBlock = () => {
-    if (typeof document === "undefined" || !editorRef.current) return;
-    try {
-      const sel = window.getSelection();
-      let preNode: HTMLElement | null = null;
-      if (sel && sel.rangeCount > 0) {
-        let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
-        while (node && node !== editorRef.current) {
-          if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName.toLowerCase() === "pre") {
-            preNode = node as HTMLElement;
-            break;
-          }
-          node = node.parentNode;
-        }
-      }
-
-      if (preNode) {
-        document.execCommand("formatBlock", false, "<p>");
-      } else {
-        document.execCommand("formatBlock", false, "<pre>");
-      }
-    } catch {
-      document.execCommand("formatBlock", false, "<pre>");
+  // Helper to exit a code block into the paragraph below
+  const exitCodeBlock = (container: HTMLElement) => {
+    // Auto-collapse code block on exit as requested by user
+    const pre = container.querySelector(".code-content") as HTMLElement;
+    const chevron = container.querySelector(".code-chevron") as HTMLElement;
+    const lineCount = container.querySelector(".code-line-count") as HTMLElement;
+    if (pre) {
+      pre.classList.add("hidden");
+      if (chevron) chevron.textContent = "▶";
+      const text = extractCodeText(pre);
+      const count = text.split("\n").filter((l) => l.length > 0).length || 1;
+      if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"} (collapsed)`;
     }
+
+    // Find or create normal paragraph below
+    let nextEl = container.nextElementSibling as HTMLElement;
+    if (!nextEl || nextEl.tagName.toLowerCase() !== "p") {
+      const p = document.createElement("p");
+      p.innerHTML = "<br>";
+      container.parentNode?.insertBefore(p, container.nextSibling);
+      nextEl = p;
+    }
+
+    // Move selection and focus to that paragraph
+    const range = document.createRange();
+    const sel = window.getSelection();
+    range.setStart(nextEl, 0);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    nextEl.focus();
+
     handleInput();
     checkActiveFormats();
-    if (editorRef.current) {
-      editorRef.current.focus();
+  };
+
+  // Helper to toggle container collapse/expand
+  const toggleContainerCollapse = (container: HTMLElement) => {
+    const pre = container.querySelector(".code-content") as HTMLElement;
+    const chevron = container.querySelector(".code-chevron") as HTMLElement;
+    const lineCount = container.querySelector(".code-line-count") as HTMLElement;
+    if (!pre) return;
+
+    const isCollapsed = pre.classList.contains("hidden");
+    if (isCollapsed) {
+      // Expand
+      pre.classList.remove("hidden");
+      if (chevron) chevron.textContent = "▼";
+      const text = extractCodeText(pre);
+      const count = text.split("\n").length;
+      if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
+      pre.focus();
+    } else {
+      // Collapse
+      pre.classList.add("hidden");
+      if (chevron) chevron.textContent = "▶";
+      const text = extractCodeText(pre);
+      const count = text.split("\n").filter((l) => l.length > 0).length || 1;
+      if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"} (collapsed)`;
+    }
+    checkActiveFormats();
+  };
+
+  // Toggle or exit code block formatting
+  const toggleCodeBlock = () => {
+    if (typeof document === "undefined" || !editorRef.current) return;
+
+    // Check if cursor is already inside a code block
+    const sel = window.getSelection();
+    let codeContainer: HTMLElement | null = null;
+    let codeContent: HTMLElement | null = null;
+
+    if (sel && sel.rangeCount > 0) {
+      let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
+      while (node && node !== editorRef.current) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement;
+          if (el.classList.contains("code-block-container")) {
+            codeContainer = el;
+            break;
+          }
+          if (el.classList.contains("code-content") || el.tagName.toLowerCase() === "pre") {
+            codeContent = el;
+            codeContainer = el.closest(".code-block-container") as HTMLElement;
+            break;
+          }
+        }
+        node = node.parentNode;
+      }
+    }
+
+    // CASE 1: Cursor is inside a code block -> User clicked <> to EXIT!
+    if (codeContainer || codeContent) {
+      const targetContainer = codeContainer || (codeContent?.parentElement as HTMLElement);
+      if (targetContainer) {
+        exitCodeBlock(targetContainer);
+        return;
+      }
+    }
+
+    // CASE 2: User is in normal notes -> Insert a new code block!
+    const blockHtml = createCodeBlockHtml("", "cpp");
+    document.execCommand("insertHTML", false, blockHtml);
+    handleInput();
+    checkActiveFormats();
+
+    // Focus inside newly inserted code-content
+    setTimeout(() => {
+      if (editorRef.current) {
+        const preElements = editorRef.current.querySelectorAll(".code-content");
+        const lastPre = preElements[preElements.length - 1] as HTMLElement;
+        if (lastPre) {
+          lastPre.focus();
+        }
+      }
+    }, 30);
+  };
+
+  // Click handler on editor to handle collapse/expand and exit clicks
+  const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+
+    // 1. Clicked on exit code button
+    const exitBtn = target.closest('[data-action="exit-code"]');
+    if (exitBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const container = exitBtn.closest(".code-block-container") as HTMLElement;
+      if (container) {
+        exitCodeBlock(container);
+      }
+      return;
+    }
+
+    // 2. Clicked on header to collapse/expand
+    const header = target.closest('[data-action="toggle-collapse"]');
+    if (header) {
+      e.preventDefault();
+      e.stopPropagation();
+      const container = header.closest(".code-block-container") as HTMLElement;
+      if (container) {
+        toggleContainerCollapse(container);
+      }
+      return;
+    }
+
+    // 3. Clicked directly in empty bottom space below all elements
+    if (target === editorRef.current && editorRef.current) {
+      const lastChild = editorRef.current.lastElementChild;
+      if (lastChild && lastChild.tagName.toLowerCase() === "p") {
+        (lastChild as HTMLElement).focus();
+      } else {
+        const p = document.createElement("p");
+        p.innerHTML = "<br>";
+        editorRef.current.appendChild(p);
+        p.focus();
+      }
+    }
+
+    checkActiveFormats();
+  };
+
+  // Keyboard navigation inside editor: Tab for 4 spaces, Shift+Enter/Escape to exit code block
+  const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const sel = window.getSelection();
+    let insideCode = false;
+    let codeContentEl: HTMLElement | null = null;
+
+    if (sel && sel.rangeCount > 0) {
+      let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
+      while (node && node !== editorRef.current) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement;
+          if (el.classList.contains("code-content") || el.tagName.toLowerCase() === "pre") {
+            insideCode = true;
+            codeContentEl = el;
+            break;
+          }
+        }
+        node = node.parentNode;
+      }
+    }
+
+    if (insideCode && codeContentEl) {
+      // Tab key inside code -> indent 4 spaces
+      if (e.key === "Tab") {
+        e.preventDefault();
+        document.execCommand("insertText", false, "    ");
+        handleInput();
+        return;
+      }
+
+      // Shift+Enter or Escape inside code -> Exit to notes below!
+      if (e.key === "Escape" || (e.key === "Enter" && e.shiftKey)) {
+        e.preventDefault();
+        const container = codeContentEl.closest(".code-block-container") as HTMLElement;
+        if (container) {
+          exitCodeBlock(container);
+        }
+        return;
+      }
+
+      // Enter inside code block -> ensure clean newline and update line count
+      if (e.key === "Enter") {
+        setTimeout(() => {
+          if (codeContentEl) {
+            const container = codeContentEl.closest(".code-block-container");
+            const lineCountEl = container?.querySelector(".code-line-count");
+            if (lineCountEl) {
+              const count = extractCodeText(codeContentEl).split("\n").length;
+              lineCountEl.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
+            }
+          }
+        }, 10);
+      }
     }
   };
 
@@ -530,40 +772,53 @@ export function NotesEditorModal({
     const text = e.clipboardData.getData("text/plain");
     if (!text) return;
 
-    // Detect if pasted content is code (multiple lines with indentation, braces, semicolons or code keywords)
+    const sel = window.getSelection();
+    let insideCode = false;
+    let codeContentEl: HTMLElement | null = null;
+
+    if (sel && sel.rangeCount > 0) {
+      let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
+      while (node && node !== editorRef.current) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement;
+          if (el.classList.contains("code-content") || el.tagName.toLowerCase() === "pre") {
+            insideCode = true;
+            codeContentEl = el;
+            break;
+          }
+        }
+        node = node.parentNode;
+      }
+    }
+
+    if (insideCode && codeContentEl) {
+      e.preventDefault();
+      document.execCommand("insertText", false, text);
+
+      // Update line count in header
+      const container = codeContentEl.closest(".code-block-container");
+      const lineCountEl = container?.querySelector(".code-line-count");
+      if (lineCountEl) {
+        const count = extractCodeText(codeContentEl).split("\n").length;
+        lineCountEl.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
+      }
+
+      handleInput();
+      checkActiveFormats();
+      return;
+    }
+
+    // Outside code block: detect if pasted content is code
     const isCode =
       text.includes("\n") &&
       (/[{}();=>]|^\s{2,}|\b(def|class|function|var|let|const|int|public|private|void|return|if|for|while|import|include)\b/m.test(text) ||
         text.trim().startsWith("//") ||
         text.trim().startsWith("#"));
 
-    // Check if cursor is already inside a pre element
-    const sel = window.getSelection();
-    let inPre = false;
-    if (sel && sel.rangeCount > 0) {
-      let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
-      while (node && node !== editorRef.current) {
-        if (node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).tagName.toLowerCase() === "pre") {
-          inPre = true;
-          break;
-        }
-        node = node.parentNode;
-      }
-    }
-
-    if (inPre) {
-      e.preventDefault();
-      document.execCommand("insertText", false, text);
-      handleInput();
-      checkActiveFormats();
-      return;
-    }
-
     if (isCode) {
       e.preventDefault();
-      const escaped = escapeHtml(text);
-      const preHtml = `<pre class="code-block"><code>${escaped}</code></pre><p><br></p>`;
-      document.execCommand("insertHTML", false, preHtml);
+      const blockHtml = createCodeBlockHtml(text, "cpp");
+      document.execCommand("insertHTML", false, blockHtml);
       handleInput();
       checkActiveFormats();
       return;
@@ -741,6 +996,8 @@ export function NotesEditorModal({
             suppressContentEditableWarning
             onInput={handleInput}
             onPaste={handlePaste}
+            onClick={handleEditorClick}
+            onKeyDown={handleEditorKeyDown}
             onKeyUp={checkActiveFormats}
             onMouseUp={checkActiveFormats}
             data-placeholder="Add your approach, time complexity, code or insight..."
@@ -754,11 +1011,11 @@ export function NotesEditorModal({
               "[&_u]:underline [&_u]:underline-offset-2 [&_u]:decoration-violet-400",
               "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ul]:space-y-1",
               "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_ol]:space-y-1",
-              "[&_p]:my-1",
+              "[&_p]:my-1.5 [&_p]:text-sm [&_p]:sm:text-base [&_p]:text-zinc-100",
               "[&_code]:bg-violet-500/15 [&_code]:border [&_code]:border-violet-500/30 [&_code]:text-cyan-300 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono",
-              // Code Block Syntax Styling
-              "[&_pre]:my-2.5 [&_pre]:p-3.5 [&_pre]:rounded-xl [&_pre]:bg-[#080914] [&_pre]:border [&_pre]:border-white/10 [&_pre]:font-mono [&_pre]:text-xs [&_pre]:text-cyan-300 [&_pre]:leading-relaxed [&_pre]:overflow-x-auto [&_pre]:shadow-inner [&_pre]:whitespace-pre",
-              "[&_pre_code]:bg-transparent [&_pre_code]:border-0 [&_pre_code]:p-0 [&_pre_code]:text-inherit [&_pre_code]:font-mono",
+              // Collapsible Code Block Container Styles
+              "[&_.code-block-container]:my-3 [&_.code-block-container]:rounded-xl [&_.code-block-container]:border [&_.code-block-container]:border-white/10 [&_.code-block-container]:bg-[#080914] [&_.code-block-container]:overflow-hidden [&_.code-block-container]:shadow-md",
+              "[&_.code-content]:p-3 [&_.code-content]:text-xs [&_.code-content]:font-mono [&_.code-content]:text-cyan-200 [&_.code-content]:leading-relaxed [&_.code-content]:overflow-x-auto [&_.code-content]:whitespace-pre [&_.code-content]:outline-none",
               // Clean placeholder when empty
               "empty:before:content-[attr(data-placeholder)] empty:before:text-zinc-600 empty:before:pointer-events-none"
             )}

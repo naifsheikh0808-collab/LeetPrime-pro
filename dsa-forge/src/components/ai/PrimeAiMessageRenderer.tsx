@@ -33,7 +33,7 @@ const LITERALS = new Set([
   "true", "false", "null", "nullptr", "nil", "none", "undefined", "nan", "infinity"
 ]);
 
-type SyntaxTokenType =
+export type SyntaxTokenType =
   | "keyword"
   | "type"
   | "literal"
@@ -48,12 +48,12 @@ type SyntaxTokenType =
   | "identifier"
   | "plain";
 
-interface SyntaxToken {
+export interface SyntaxToken {
   type: SyntaxTokenType;
   value: string;
 }
 
-function tokenizeCode(code: string, lang = "cpp"): SyntaxToken[] {
+export function tokenizeCode(code: string, lang = "cpp"): SyntaxToken[] {
   const l = (lang || "").toLowerCase();
   const isPython = l === "python" || l === "py";
   const isSql = l === "sql";
@@ -217,7 +217,7 @@ function tokenizeCode(code: string, lang = "cpp"): SyntaxToken[] {
   return tokens;
 }
 
-function getTokenClass(type: SyntaxTokenType, value: string): string {
+export function getTokenClass(type: SyntaxTokenType, value: string): string {
   switch (type) {
     case "keyword":
       return "text-purple-400 font-semibold";

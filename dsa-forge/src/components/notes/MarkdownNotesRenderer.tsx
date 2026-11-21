@@ -1,12 +1,111 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { cn } from "@/lib/utils";
+import { tokenizeCode, getTokenClass } from "@/components/ai/PrimeAiMessageRenderer";
+import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 
 interface MarkdownNotesRendererProps {
   content: string;
   className?: string;
   isCompact?: boolean;
+}
+
+function CollapsibleCodeBlock({
+  code,
+  lang,
+  isCompact = false,
+}: {
+  code: string;
+  lang?: string;
+  isCompact?: boolean;
+}) {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const lines = code.split("\n");
+  const lineCount = lines.length;
+  const tokens = tokenizeCode(code, lang || "cpp");
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div
+      className={cn(
+        "my-2.5 rounded-xl border border-white/10 bg-[#080914] overflow-hidden shadow-lg transition-all",
+        isCompact && "my-1.5"
+      )}
+    >
+      {/* Header with collapse toggle, language badge, line count, and copy button */}
+      <div
+        onClick={() => setIsCollapsed(!isCollapsed)}
+        className="flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b border-white/[0.08] cursor-pointer hover:bg-white/[0.07] transition-colors select-none"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-zinc-400 hover:text-white transition-colors">
+            {isCollapsed ? (
+              <ChevronRight className="w-3.5 h-3.5 text-violet-400" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5 text-violet-400" />
+            )}
+          </span>
+          <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
+            {lang || "CODE"}
+          </span>
+          <span className="text-[11px] text-zinc-400 font-mono">
+            {lineCount} {lineCount === 1 ? "line" : "lines"}
+          </span>
+          {isCollapsed && (
+            <span className="text-[10px] text-zinc-400 italic">
+              · Click to expand
+            </span>
+          )}
+        </div>
+
+        <button
+          onClick={handleCopy}
+          type="button"
+          className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+          title="Copy code"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3 h-3 text-emerald-400" />
+              <span className="text-emerald-400">Copied</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              <span>Copy</span>
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Code body (collapsible with Prime AI colorful syntax highlighting) */}
+      {!isCollapsed && (
+        <pre
+          className={cn(
+            "p-3.5 overflow-x-auto font-mono text-xs leading-relaxed select-text scrollbar-thin",
+            isCompact && "p-2.5 text-[11px]"
+          )}
+        >
+          <code>
+            {tokens.map((token, i) => (
+              <span key={i} className={getTokenClass(token.type, token.value)}>
+                {token.value}
+              </span>
+            ))}
+          </code>
+        </pre>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -314,27 +413,12 @@ export function MarkdownNotesRenderer({
 
           case "code":
             return (
-              <div
+              <CollapsibleCodeBlock
                 key={idx}
-                className={cn(
-                  "my-2 rounded-xl border border-white/10 bg-[#080914] overflow-hidden shadow-md",
-                  isCompact ? "my-1.5 rounded-lg" : "my-2"
-                )}
-              >
-                {block.lang && (
-                  <div className="px-3 py-1 bg-white/[0.03] border-b border-white/[0.07] text-[10px] font-mono text-violet-300 uppercase tracking-wider font-bold">
-                    {block.lang}
-                  </div>
-                )}
-                <pre
-                  className={cn(
-                    "overflow-x-auto font-mono text-cyan-300/95 leading-relaxed scrollbar-thin",
-                    isCompact ? "p-2.5 text-[10px]" : "p-3 text-[11px]"
-                  )}
-                >
-                  <code>{block.text}</code>
-                </pre>
-              </div>
+                code={block.text || ""}
+                lang={block.lang}
+                isCompact={isCompact}
+              />
             );
 
           case "p":

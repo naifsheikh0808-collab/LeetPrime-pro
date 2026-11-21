@@ -14,6 +14,11 @@ import {
   Code,
   Check,
   BookOpen,
+  Download,
+  ChevronDown,
+  FileText,
+  FileCode,
+  File,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { tokenizeCode, getTokenClass } from "@/components/ai/PrimeAiMessageRenderer";
@@ -135,7 +140,7 @@ function markdownToHtml(md: string): string {
       .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
       .replace(
         /&lt;mark&gt;(.*?)&lt;\/mark&gt;/gi,
-        '<code class="prime-highlight px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 font-mono text-[12px] font-semibold tracking-tight inline-block align-baseline">$1</code>'
+        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline">$1</code>'
       );
 
     return safe
@@ -144,7 +149,7 @@ function markdownToHtml(md: string): string {
       .replace(/\*([^*]+?)\*/g, "<i>$1</i>")
       .replace(
         /`([^`]+)`/g,
-        '<code class="prime-highlight px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 font-mono text-[12px] font-semibold tracking-tight inline-block align-baseline">$1</code>'
+        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline">$1</code>'
       );
   };
 
@@ -367,6 +372,20 @@ export function NotesEditorModal({
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const wasOpenRef = useRef(false);
   const lastSavedMdRef = useRef(initialNotes);
+
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const exportDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isExportOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(e.target as Node)) {
+        setIsExportOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isExportOpen]);
 
   const [activeFormats, setActiveFormats] = useState({
     bold: false,
@@ -697,6 +716,9 @@ export function NotesEditorModal({
     }
 
     // CASE 1: Cursor or selection is ALREADY inside a highlight -> UNAPPLY or EXIT
+    const highlightClasses =
+      "prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline";
+
     if (existingHighlight) {
       if (range.collapsed) {
         // Collapsed cursor inside highlight:
@@ -718,13 +740,67 @@ export function NotesEditorModal({
         checkActiveFormats();
         return;
       } else {
-        // Text is selected inside existing highlight -> unwrap to remove highlight
+        // Text is selected inside existing highlight -> unhighlight ONLY the selected sub-text!
+        const totalText = (existingHighlight.textContent || "").replace(/\u200B/g, "");
+        const selectedText = range.toString().replace(/\u200B/g, "");
+
+        // If the entire text was selected, unwrap the whole element
+        if (selectedText.trim() === totalText.trim() || selectedText.length >= totalText.length) {
+          const parent = existingHighlight.parentNode;
+          if (parent) {
+            while (existingHighlight.firstChild) {
+              parent.insertBefore(existingHighlight.firstChild, existingHighlight);
+            }
+            existingHighlight.remove();
+            handleInput();
+            checkActiveFormats();
+            return;
+          }
+        }
+
+        // Sub-text selected: split into [beforeText, selectedText, afterText]
+        const preRange = document.createRange();
+        preRange.selectNodeContents(existingHighlight);
+        preRange.setEnd(range.startContainer, range.startOffset);
+        const beforeText = (preRange.toString() || "").replace(/\u200B/g, "");
+
+        const postRange = document.createRange();
+        postRange.selectNodeContents(existingHighlight);
+        postRange.setStart(range.endContainer, range.endOffset);
+        const afterText = (postRange.toString() || "").replace(/\u200B/g, "");
+
         const parent = existingHighlight.parentNode;
         if (parent) {
-          while (existingHighlight.firstChild) {
-            parent.insertBefore(existingHighlight.firstChild, existingHighlight);
+          const frag = document.createDocumentFragment();
+
+          // 1. Portion before selected sub-text (remains highlighted)
+          if (beforeText.length > 0) {
+            const beforeEl = document.createElement("code");
+            beforeEl.className = highlightClasses;
+            beforeEl.textContent = beforeText;
+            frag.appendChild(beforeEl);
           }
-          existingHighlight.remove();
+
+          // 2. The selected sub-text (unhighlighted plain text)
+          const unhighlightedNode = document.createTextNode(selectedText);
+          frag.appendChild(unhighlightedNode);
+
+          // 3. Portion after selected sub-text (remains highlighted)
+          if (afterText.length > 0) {
+            const afterEl = document.createElement("code");
+            afterEl.className = highlightClasses;
+            afterEl.textContent = afterText;
+            frag.appendChild(afterEl);
+          }
+
+          parent.replaceChild(frag, existingHighlight);
+
+          // Keep the unhighlighted sub-text selected for fluid UX
+          const newRange = document.createRange();
+          newRange.selectNodeContents(unhighlightedNode);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+
           handleInput();
           checkActiveFormats();
           return;
@@ -733,9 +809,6 @@ export function NotesEditorModal({
     }
 
     // CASE 2: NOT inside a highlight -> APPLY
-    const highlightClasses =
-      "prime-highlight px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 font-mono text-[12px] font-semibold tracking-tight inline-block align-baseline";
-
     if (range.collapsed) {
       // No text selected: insert an empty prime-highlight badge with \u200B and position cursor inside
       const highlightEl = document.createElement("code");
@@ -768,6 +841,247 @@ export function NotesEditorModal({
       handleInput();
       checkActiveFormats();
       return;
+    }
+  };
+
+  // Export handlers (.md, .txt, .pdf)
+  const exportAsMarkdown = () => {
+    try {
+      const md = editorRef.current ? htmlToMarkdown(editorRef.current.innerHTML) : initialNotes;
+      const header = `# ${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}\n\n*Exported from LeetPrime*\n\n---\n\n`;
+      const fullContent = header + md;
+
+      const blob = new Blob([fullContent], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safeTitle = (problemTitle || "notes").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      a.download = `${problemExternalId ? `${problemExternalId}-` : ""}${safeTitle}-notes.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setIsExportOpen(false);
+    } catch (err) {
+      console.error("[NotesEditorModal] Export MD error:", err);
+    }
+  };
+
+  const exportAsText = () => {
+    try {
+      let plain = "";
+      if (editorRef.current) {
+        plain = editorRef.current.innerText || "";
+      } else {
+        plain = initialNotes;
+      }
+      const header = `${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}\nLeetPrime Notes\n${"-".repeat(40)}\n\n`;
+      const fullContent = header + plain;
+
+      const blob = new Blob([fullContent], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safeTitle = (problemTitle || "notes").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      a.download = `${problemExternalId ? `${problemExternalId}-` : ""}${safeTitle}-notes.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setIsExportOpen(false);
+    } catch (err) {
+      console.error("[NotesEditorModal] Export TXT error:", err);
+    }
+  };
+
+  const exportAsPdf = () => {
+    try {
+      setIsExportOpen(false);
+      const titleText = `${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}`;
+      const editorHtml = editorRef.current ? editorRef.current.innerHTML : "";
+
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "0";
+      iframe.style.height = "0";
+      iframe.style.border = "none";
+      document.body.appendChild(iframe);
+
+      const doc = iframe.contentWindow?.document;
+      if (!doc) return;
+
+      const printHtml = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${titleText} - LeetPrime Notes</title>
+          <style>
+            @page {
+              margin: 16mm 14mm;
+              size: A4;
+            }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              color: #0f172a;
+              background: #ffffff;
+              line-height: 1.6;
+              padding: 0;
+              margin: 0;
+            }
+            .header {
+              border-bottom: 2px solid #e2e8f0;
+              padding-bottom: 12px;
+              margin-bottom: 20px;
+            }
+            .header-tag {
+              display: inline-block;
+              font-size: 10px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+              color: #7c3aed;
+              background: #f5f3ff;
+              border: 1px solid #ddd6fe;
+              padding: 2px 8px;
+              border-radius: 4px;
+              margin-bottom: 6px;
+            }
+            h1 {
+              font-size: 20px;
+              font-weight: 800;
+              margin: 4px 0 6px 0;
+              color: #0f172a;
+            }
+            .meta {
+              font-size: 11px;
+              color: #64748b;
+            }
+            h2 {
+              font-size: 16px;
+              font-weight: 700;
+              color: #1e293b;
+              margin-top: 18px;
+              margin-bottom: 8px;
+            }
+            h3 {
+              font-size: 13.5px;
+              font-weight: 600;
+              color: #334155;
+            }
+            p {
+              margin: 8px 0;
+              font-size: 13px;
+              color: #1e293b;
+            }
+            ul, ol {
+              padding-left: 22px;
+              margin: 8px 0;
+              font-size: 13px;
+            }
+            li {
+              margin: 4px 0;
+            }
+            .code-block-container {
+              border: 1px solid #e2e8f0;
+              border-radius: 8px;
+              background: #0f172a !important;
+              color: #f8fafc !important;
+              margin: 12px 0;
+              overflow: hidden;
+              page-break-inside: avoid;
+            }
+            .code-block-header {
+              display: flex;
+              justify-content: space-between;
+              background: #1e293b !important;
+              padding: 6px 12px;
+              font-size: 11px;
+              color: #94a3b8 !important;
+              border-bottom: 1px solid #334155;
+            }
+            .code-block-header button, .code-delete-btn, .code-toggle-btn {
+              display: none !important;
+            }
+            pre.code-content {
+              display: block !important;
+              background: #0f172a !important;
+              color: #e2e8f0 !important;
+              padding: 12px;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 11px;
+              line-height: 1.5;
+              margin: 0;
+              overflow-x: auto;
+              white-space: pre-wrap;
+            }
+            pre.code-content .text-purple-400 { color: #c084fc !important; }
+            pre.code-content .text-cyan-300 { color: #67e8f9 !important; }
+            pre.code-content .text-amber-300 { color: #fcd34d !important; }
+            pre.code-content .text-emerald-400 { color: #34d399 !important; }
+            pre.code-content .text-orange-400 { color: #fb923c !important; }
+            pre.code-content .text-slate-400 { color: #94a3b8 !important; font-style: italic; }
+
+            code.prime-highlight, .prime-highlight {
+              background: #fef3c7 !important;
+              border: 1px solid #f59e0b !important;
+              color: #92400e !important;
+              padding: 2px 6px;
+              border-radius: 4px;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 11.5px;
+              font-weight: 600;
+              display: inline-block;
+            }
+            u {
+              text-decoration: underline;
+              text-decoration-color: #f59e0b;
+            }
+            b, strong {
+              font-weight: 700;
+              color: #0f172a;
+            }
+            em, i {
+              font-style: italic;
+              color: #334155;
+            }
+            .footer {
+              margin-top: 30px;
+              border-top: 1px solid #e2e8f0;
+              padding-top: 8px;
+              font-size: 10px;
+              color: #94a3b8;
+              text-align: right;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="header-tag">LeetPrime DSA Notes</div>
+            <h1>${titleText}</h1>
+            <div class="meta">Exported on ${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</div>
+          </div>
+          <div class="content">
+            ${editorHtml}
+          </div>
+          <div class="footer">Prepared with LeetPrime · Strategic DSA Interview Preparation</div>
+        </body>
+        </html>
+      `;
+
+      doc.open();
+      doc.write(printHtml);
+      doc.close();
+
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+        }, 1200);
+      }, 250);
+    } catch (err) {
+      console.error("[NotesEditorModal] Export PDF error:", err);
     }
   };
 
@@ -1030,7 +1344,7 @@ export function NotesEditorModal({
     cn(
       "p-1.5 rounded-lg transition-all cursor-pointer text-xs flex items-center justify-center gap-1",
       isActive
-        ? "bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+        ? "bg-amber-500/20 text-amber-200 border border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
         : "text-zinc-400 hover:text-white hover:bg-white/10 border border-transparent"
     );
 
@@ -1083,123 +1397,179 @@ export function NotesEditorModal({
         </div>
 
         {/* ── Visual WYSIWYG Formatting Toolbar with Active Glow ── */}
-        <div className="px-3 sm:px-4 py-2 border-b border-white/[0.06] bg-white/[0.015] flex items-center gap-1 overflow-x-auto no-scrollbar">
-          {/* Headings */}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              toggleHeading("H1");
-            }}
-            className={getBtnClass(activeFormats.h1)}
-            title="Large Heading"
-          >
-            <Heading1 className="w-4 h-4" />
-          </button>
+        <div className="px-3 sm:px-4 py-2 border-b border-white/[0.06] bg-white/[0.015] flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Headings */}
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                toggleHeading("H1");
+              }}
+              className={getBtnClass(activeFormats.h1)}
+              title="Large Heading"
+            >
+              <Heading1 className="w-4 h-4" />
+            </button>
 
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              toggleHeading("H2");
-            }}
-            className={getBtnClass(activeFormats.h2)}
-            title="Medium Heading"
-          >
-            <Heading2 className="w-4 h-4" />
-          </button>
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                toggleHeading("H2");
+              }}
+              className={getBtnClass(activeFormats.h2)}
+              title="Medium Heading"
+            >
+              <Heading2 className="w-4 h-4" />
+            </button>
 
-          <div className="h-4 w-px bg-white/10 mx-1" />
+            <div className="h-4 w-px bg-white/10 mx-1" />
 
-          {/* Prime AI Highlight Notation / Term Button */}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              toggleHighlight();
-            }}
-            className={getHighlightBtnClass(activeFormats.highlight)}
-            title="Highlight Notation / Term (Ctrl+H)"
-          >
-            <Highlighter className="w-4 h-4" />
-          </button>
+            {/* Prime AI Highlight Notation / Term Button */}
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                toggleHighlight();
+              }}
+              className={getHighlightBtnClass(activeFormats.highlight)}
+              title="Highlight Notation / Term (Ctrl+H)"
+            >
+              <Highlighter className="w-4 h-4" />
+            </button>
 
-          {/* Bold, Italic, Underline */}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              execCmd("bold");
-            }}
-            className={getBtnClass(activeFormats.bold)}
-            title="Bold (Ctrl+B)"
-          >
-            <Bold className="w-4 h-4 font-bold" />
-          </button>
+            {/* Bold, Italic, Underline */}
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                execCmd("bold");
+              }}
+              className={getBtnClass(activeFormats.bold)}
+              title="Bold (Ctrl+B)"
+            >
+              <Bold className="w-4 h-4 font-bold" />
+            </button>
 
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              execCmd("italic");
-            }}
-            className={getBtnClass(activeFormats.italic)}
-            title="Italic (Ctrl+I)"
-          >
-            <Italic className="w-4 h-4 italic" />
-          </button>
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                execCmd("italic");
+              }}
+              className={getBtnClass(activeFormats.italic)}
+              title="Italic (Ctrl+I)"
+            >
+              <Italic className="w-4 h-4 italic" />
+            </button>
 
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              execCmd("underline");
-            }}
-            className={getBtnClass(activeFormats.underline)}
-            title="Underline (Ctrl+U)"
-          >
-            <Underline className="w-4 h-4 underline" />
-          </button>
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                execCmd("underline");
+              }}
+              className={getBtnClass(activeFormats.underline)}
+              title="Underline (Ctrl+U)"
+            >
+              <Underline className="w-4 h-4 underline" />
+            </button>
 
-          {/* Code Block Button */}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              toggleCodeBlock();
-            }}
-            className={getBtnClass(activeFormats.code)}
-            title="Code Block"
-          >
-            <Code className="w-4 h-4" />
-          </button>
+            {/* Code Block Button */}
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                toggleCodeBlock();
+              }}
+              className={getBtnClass(activeFormats.code)}
+              title="Code Block"
+            >
+              <Code className="w-4 h-4" />
+            </button>
 
-          <div className="h-4 w-px bg-white/10 mx-1" />
+            <div className="h-4 w-px bg-white/10 mx-1" />
 
-          {/* Lists */}
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              execCmd("insertUnorderedList");
-            }}
-            className={getBtnClass(activeFormats.ul)}
-            title="Bullet List"
-          >
-            <List className="w-4 h-4" />
-          </button>
+            {/* Lists */}
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                execCmd("insertUnorderedList");
+              }}
+              className={getBtnClass(activeFormats.ul)}
+              title="Bullet List"
+            >
+              <List className="w-4 h-4" />
+            </button>
 
-          <button
-            type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              execCmd("insertOrderedList");
-            }}
-            className={getBtnClass(activeFormats.ol)}
-            title="Numbered List"
-          >
-            <ListOrdered className="w-4 h-4" />
-          </button>
+            <button
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                execCmd("insertOrderedList");
+              }}
+              className={getBtnClass(activeFormats.ol)}
+              title="Numbered List"
+            >
+              <ListOrdered className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Right: Minimalist Export Dropdown */}
+          <div className="relative shrink-0 ml-auto" ref={exportDropdownRef}>
+            <button
+              type="button"
+              onClick={() => setIsExportOpen(!isExportOpen)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all cursor-pointer select-none"
+              title="Export or share notes"
+            >
+              <Download className="w-3.5 h-3.5 text-amber-400" />
+              <span>Export</span>
+              <ChevronDown
+                className={cn(
+                  "w-3 h-3 text-zinc-400 transition-transform duration-150",
+                  isExportOpen && "rotate-180"
+                )}
+              />
+            </button>
+
+            {/* Minimalist Dropdown Menu with Quick Info Hover Tooltips */}
+            {isExportOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-44 rounded-xl bg-[#0d0f1e] border border-white/10 shadow-2xl p-1 z-50 animate-in fade-in zoom-in-95 duration-100">
+                <button
+                  type="button"
+                  onClick={exportAsPdf}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-200 hover:text-white hover:bg-white/10 transition-colors text-left cursor-pointer group"
+                  title="Export as PDF (.pdf) — Styled & print-ready for reading and sharing"
+                >
+                  <FileText className="w-3.5 h-3.5 text-rose-400 group-hover:scale-110 transition-transform shrink-0" />
+                  <span className="truncate">Export as PDF (.pdf)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportAsMarkdown}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-200 hover:text-white hover:bg-white/10 transition-colors text-left cursor-pointer group"
+                  title="Export as Markdown (.md) — For developer tools, Obsidian, Notion & personal wikis"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-violet-400 group-hover:scale-110 transition-transform shrink-0" />
+                  <span className="truncate">Export as Markdown (.md)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportAsText}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs font-medium text-zinc-200 hover:text-white hover:bg-white/10 transition-colors text-left cursor-pointer group"
+                  title="Export as Plain Text (.txt) — Clean unformatted plain text notes"
+                >
+                  <File className="w-3.5 h-3.5 text-zinc-400 group-hover:scale-110 transition-transform shrink-0" />
+                  <span className="truncate">Export as Text (.txt)</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Visual WYSIWYG Writing Area ── */}
@@ -1222,11 +1592,11 @@ export function NotesEditorModal({
               "[&_h2]:text-base [&_h2]:sm:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h2]:mb-1.5 [&_h2]:mt-2",
               "[&_b]:font-bold [&_b]:text-white [&_strong]:font-bold [&_strong]:text-white",
               "[&_i]:italic [&_i]:text-violet-200 [&_em]:italic [&_em]:text-violet-200",
-              "[&_u]:underline [&_u]:underline-offset-2 [&_u]:decoration-violet-400",
+              "[&_u]:underline [&_u]:underline-offset-2 [&_u]:decoration-amber-400/80",
               "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ul]:space-y-1",
               "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_ol]:space-y-1",
               "[&_p]:my-1.5 [&_p]:text-sm [&_p]:sm:text-base [&_p]:text-zinc-100",
-              "[&_code]:bg-violet-500/15 [&_code]:border [&_code]:border-violet-500/30 [&_code]:text-cyan-300 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono",
+              "[&_code]:bg-amber-400/25 [&_code]:border [&_code]:border-amber-400/50 [&_code]:text-amber-200 [&_code]:shadow-[0_0_10px_rgba(245,158,11,0.2)] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:text-[12px] [&_code]:font-mono [&_code]:font-semibold",
               // Collapsible Code Block Container Styles
               "[&_.code-block-container]:my-3 [&_.code-block-container]:rounded-xl [&_.code-block-container]:border [&_.code-block-container]:border-white/10 [&_.code-block-container]:bg-[#080914] [&_.code-block-container]:overflow-hidden [&_.code-block-container]:shadow-md",
               "[&_.code-content]:p-3 [&_.code-content]:text-xs [&_.code-content]:font-mono [&_.code-content]:text-cyan-200 [&_.code-content]:leading-relaxed [&_.code-content]:overflow-x-auto [&_.code-content]:whitespace-pre [&_.code-content]:outline-none",

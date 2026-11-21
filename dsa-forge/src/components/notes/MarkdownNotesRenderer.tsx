@@ -109,11 +109,33 @@ function CollapsibleCodeBlock({
 }
 
 /**
- * Tokenizes inline Markdown:
- * - Bold: **text**
- * - Italic: *text*
- * - Underline: <u>text</u> or __text__
- * - Inline code: `code`
+ * Normalizes note content so that raw HTML entities, stray wrapper tags,
+ * and mixed Markdown/HTML render cleanly without raw tags spilling into view.
+ */
+function normalizeNotesContent(content: string): string {
+  if (!content) return "";
+  let text = content;
+
+  // 1. Unescape HTML entities that may have been saved as entities
+  text = text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+
+  // 2. Normalize paragraph and break tags into newlines for block parsing
+  text = text
+    .replace(/<\/?(p|div)\b[^>]*>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n");
+
+  return text;
+}
+
+/**
+ * Tokenizes inline Markdown and HTML formatting:
+ * - Bold: **text**, <b>text</b>, <strong>text</strong>
+ * - Italic: *text*, _text_, <i>text</i>, <em>text</em>
+ * - Underline: <u>text</u>, __text__
+ * - Inline code / Prime AI highlight: `code`, <mark>code</mark>, <code>code</code>
  * - Big-O notation: O(1), O(n), O(n log n), etc.
  */
 function renderInlineTokens(text: string, depth = 0): React.ReactNode {
@@ -122,14 +144,14 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
 
   // Regex matches:
   // 1. `inline code`
-  // 2. <mark>highlight</mark>
-  // 3. <u>underline</u>
+  // 2. <mark>highlight</mark> or <code class="...">highlight</code>
+  // 3. <u>underline</u> (case-insensitive)
   // 4. __underline__
-  // 5. **bold**
-  // 6. *italic*
+  // 5. **bold** or <b>bold</b> or <strong>bold</strong>
+  // 6. *italic* or <i>italic</i> or <em>italic</em>
   // 7. O(...) complexity (non-backtracking)
   const tokenRegex =
-    /(`[^`]+`|<mark>[\s\S]*?<\/mark>|<u>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|\*[^*]+\*|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/g;
+    /(`[^`]+`|<mark\b[^>]*>[\s\S]*?<\/mark>|<code\b[^>]*>[\s\S]*?<\/code>|<u\b[^>]*>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>|\*[^*]+\*|<(?:i|em)\b[^>]*>[\s\S]*?<\/(?:i|em)>|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/gi;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -142,49 +164,84 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
 
     const val = match[0];
     const key = `${match.index}-${val.slice(0, 8)}`;
+    const lower = val.toLowerCase();
 
-    if ((val.startsWith("`") && val.endsWith("`")) || (val.startsWith("<mark>") && val.endsWith("</mark>"))) {
-      const code = val.startsWith("`") ? val.slice(1, -1) : val.slice(6, -7);
+    // 1. Inline Code / Highlight
+    if (
+      (val.startsWith("`") && val.endsWith("`")) ||
+      (lower.startsWith("<mark") && lower.endsWith("</mark>")) ||
+      (lower.startsWith("<code") && lower.endsWith("</code>"))
+    ) {
+      let code = "";
+      if (val.startsWith("`")) {
+        code = val.slice(1, -1);
+      } else {
+        code = val.replace(/^<[^>]+>/, "").replace(/<\/[^>]+>$/, "");
+      }
       parts.push(
         <code
           key={key}
-          className="bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 shadow-[0_0_8px_rgba(6,182,212,0.15)] px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold tracking-tight inline-block align-baseline"
+          className="bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md inline-block align-baseline"
         >
           {code}
         </code>
       );
-    } else if (
-      (val.startsWith("<u>") && val.endsWith("</u>")) ||
+    }
+    // 2. Underline
+    else if (
+      (lower.startsWith("<u") && lower.endsWith("</u>")) ||
       (val.startsWith("__") && val.endsWith("__"))
     ) {
-      const inner = val.startsWith("<u>") ? val.slice(3, -4) : val.slice(2, -2);
+      const inner = lower.startsWith("<u")
+        ? val.replace(/^<u\b[^>]*>/i, "").replace(/<\/u>$/i, "")
+        : val.slice(2, -2);
       parts.push(
         <span
           key={key}
-          className="underline underline-offset-2 decoration-violet-400 text-slate-100 font-medium decoration-1.5"
+          className="underline underline-offset-2 decoration-amber-400/80 text-slate-100 font-medium decoration-1.5"
         >
           {renderInlineTokens(inner, depth + 1)}
         </span>
       );
-    } else if (val.startsWith("**") && val.endsWith("**")) {
+    }
+    // 3. Bold
+    else if (
+      (val.startsWith("**") && val.endsWith("**")) ||
+      (lower.startsWith("<b") && lower.endsWith("</b>")) ||
+      (lower.startsWith("<strong") && lower.endsWith("</strong>"))
+    ) {
+      const inner = val.startsWith("**")
+        ? val.slice(2, -2)
+        : val.replace(/^<(?:b|strong)\b[^>]*>/i, "").replace(/<\/(?:b|strong)>$/i, "");
       parts.push(
         <strong key={key} className="text-white font-bold tracking-tight">
-          {renderInlineTokens(val.slice(2, -2), depth + 1)}
+          {renderInlineTokens(inner, depth + 1)}
         </strong>
       );
-    } else if (val.startsWith("*") && val.endsWith("*") && val.length > 2) {
+    }
+    // 4. Italic
+    else if (
+      (val.startsWith("*") && val.endsWith("*") && val.length > 2) ||
+      (lower.startsWith("<i") && lower.endsWith("</i>")) ||
+      (lower.startsWith("<em") && lower.endsWith("</em>"))
+    ) {
+      const inner = val.startsWith("*")
+        ? val.slice(1, -1)
+        : val.replace(/^<(?:i|em)\b[^>]*>/i, "").replace(/<\/(?:i|em)>$/i, "");
       parts.push(
-        <em key={key} className="text-violet-200/95 italic">
-          {renderInlineTokens(val.slice(1, -1), depth + 1)}
+        <em key={key} className="text-amber-100/90 italic">
+          {renderInlineTokens(inner, depth + 1)}
         </em>
       );
-    } else if (/^\bO\(.+\)$/.test(val)) {
+    }
+    // 5. Big-O Complexity
+    else if (/^\bO\(.+\)$/i.test(val)) {
       parts.push(
         <span
           key={key}
-          className="inline-flex items-center gap-1 font-mono text-[11px] font-bold px-1.5 py-0.5 mx-0.5 rounded-md border align-baseline bg-cyan-500/15 border-cyan-500/35 text-cyan-200 shadow-[0_0_8px_rgba(6,182,212,0.15)]"
+          className="inline-flex items-center gap-1 font-mono text-[11px] font-bold px-1.5 py-0.5 mx-0.5 rounded-md border align-baseline bg-amber-400/25 border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
           <span>{val}</span>
         </span>
       );
@@ -326,7 +383,8 @@ export function MarkdownNotesRenderer({
     );
   }
 
-  const blocks = parseBlocks(content);
+  const normalized = normalizeNotesContent(content);
+  const blocks = parseBlocks(normalized);
 
   return (
     <div

@@ -9,7 +9,7 @@ import { TIMEFRAME_LABELS } from "./constants";
 import type { Pattern, PatternQuestion, Company, Problem, UserProgress, Timeframe, Difficulty, ProgressStatus } from "./types";
 import { slugify } from "./utils";
 import { auth, db as firestoreDb, isFirebaseConfigured } from "./firebase";
-import { doc, setDoc, collection, getDocs } from "firebase/firestore";
+import { doc, setDoc, collection, getDocs, deleteDoc } from "firebase/firestore";
 import {
   getPatternProblems,
   matchesPatternValue,
@@ -125,8 +125,23 @@ export function filterProblems(opts: {
 // ─── Progress & Notes ─────────────────────────────────────────────────────────
 
 const PROGRESS_KEY = "dsaforge_progress";
+export const NOTES_STORAGE_KEY = "dsaforge_notes_store";
 export const GUEST_NOTES_KEY = "dsaforge_guest_notes";
 export const NOTES_UPDATED_EVENT = "dsaforge:notes-updated";
+
+/** Helper to read all persisted notes synchronously from local storage. */
+export function getAllStoredNotes(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(NOTES_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  try {
+    const rawGuest = localStorage.getItem(GUEST_NOTES_KEY);
+    if (rawGuest) return JSON.parse(rawGuest);
+  } catch {}
+  return {};
+}
 
 /** Fired whenever persisted progress changes so every store can re-render. */
 export const PROGRESS_UPDATED_EVENT = "dsaforge:progress-updated";
@@ -280,20 +295,8 @@ export function saveProgress(progress: Record<string, UserProgress>, skipCloudSy
   const canonical = canonicalizeProgress(progress);
   progressCache = canonical;
 
-  // Protect browser localStorage from 5MB quota exhaustion:
-  // If user is logged in, strip heavy formatted notes from localStorage so it stays lightweight (~90 bytes per problem).
-  // Heavy notes are securely stored in Firestore under users/{uid}/notes.
-  const isUserLoggedIn = Boolean(auth?.currentUser);
-  if (isUserLoggedIn) {
-    const lean: Record<string, UserProgress> = {};
-    for (const [k, v] of Object.entries(canonical)) {
-      const { notes: _, ...rest } = v;
-      lean[k] = rest;
-    }
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify(lean));
-  } else {
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify(canonical));
-  }
+  // Persist full progress to localStorage so notes and statuses are never wiped on refresh
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(canonical));
 
   // Notify every mounted progress store so counts update without a reload.
   window.dispatchEvent(new Event(PROGRESS_UPDATED_EVENT));
@@ -323,6 +326,7 @@ export function resetProgress(skipCloudSync = false): void {
   clearNotesCache();
   localStorage.removeItem(PROGRESS_KEY);
   localStorage.removeItem(GUEST_NOTES_KEY);
+  localStorage.removeItem(NOTES_STORAGE_KEY);
   window.dispatchEvent(new Event(PROGRESS_UPDATED_EVENT));
 
   if (!skipCloudSync && typeof window !== "undefined" && auth?.currentUser && firestoreDb && isFirebaseConfigured) {
@@ -343,7 +347,7 @@ export function resetProgress(skipCloudSync = false): void {
 }
 
 /**
- * Gets notes for a problem with 0ms in-memory cache, falling back to guest localStorage or local progress.
+ * Gets notes for a problem with 0ms in-memory cache, falling back to persistent local notes store or local progress.
  */
 export function getProblemNotes(problemId: string): string {
   const canonicalId = resolveProblemId(problemId);
@@ -353,15 +357,12 @@ export function getProblemNotes(problemId: string): string {
 
   if (typeof window === "undefined") return "";
 
-  // 1. Check guest notes store
+  // 1. Check primary persistent notes store
   try {
-    const rawGuest = localStorage.getItem(GUEST_NOTES_KEY);
-    if (rawGuest) {
-      const guestNotes = JSON.parse(rawGuest);
-      if (guestNotes[canonicalId] !== undefined) {
-        notesCache[canonicalId] = guestNotes[canonicalId];
-        return guestNotes[canonicalId];
-      }
+    const stored = getAllStoredNotes();
+    if (stored[canonicalId] !== undefined) {
+      notesCache[canonicalId] = stored[canonicalId];
+      return stored[canonicalId];
     }
   } catch {}
 
@@ -379,8 +380,8 @@ export function getProblemNotes(problemId: string): string {
 
 /**
  * Saves notes for a problem:
- * - If user is logged in: saves directly to Cloud Firestore (users/{uid}/notes/{problemId}) and in-memory cache, keeping localStorage lean.
- * - If user is guest: saves locally in localStorage (dsaforge_guest_notes) until they sign in.
+ * - Persists synchronously to local storage (0ms, zero data loss on refresh).
+ * - If user is logged in: also syncs to Cloud Firestore (users/{uid}/notes/{problemId}) in background.
  */
 export async function saveProblemNotes(problemId: string, notes: string): Promise<void> {
   const canonicalId = resolveProblemId(problemId);
@@ -392,72 +393,87 @@ export async function saveProblemNotes(problemId: string, notes: string): Promis
 
   if (typeof window === "undefined") return;
 
-  const currentUser = auth?.currentUser;
-  if (currentUser && firestoreDb && isFirebaseConfigured) {
-    // 1. Authenticated user: Save note to Firestore cloud subcollection
-    try {
-      const noteDocRef = doc(firestoreDb, "users", currentUser.uid, "notes", canonicalId);
-      await setDoc(
-        noteDocRef,
-        {
-          problemId: canonicalId,
-          content: notes,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-
-      // Strip from localStorage to keep client storage lean and prevent 5MB quota exhaustion
-      const local = loadProgress();
-      if (local[canonicalId]?.notes) {
-        delete local[canonicalId].notes;
-        localStorage.setItem(PROGRESS_KEY, JSON.stringify(local));
-      }
-    } catch (err) {
-      console.warn("[Firestore] Failed to save note to cloud:", err);
+  // 1. ALWAYS persist synchronously to local notes store so notes NEVER disappear on refresh!
+  try {
+    const stored = getAllStoredNotes();
+    if (notes && notes.trim()) {
+      stored[canonicalId] = notes;
+    } else {
+      delete stored[canonicalId];
     }
-  } else {
-    // 2. Guest user: Save locally in browser storage
-    try {
-      const rawGuest = localStorage.getItem(GUEST_NOTES_KEY);
-      const guestNotes = rawGuest ? JSON.parse(rawGuest) : {};
-      guestNotes[canonicalId] = notes;
-      localStorage.setItem(GUEST_NOTES_KEY, JSON.stringify(guestNotes));
+    localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(stored));
 
-      const local = loadProgress();
-      if (local[canonicalId]) {
+    // Also update local progress
+    const local = loadProgress();
+    if (local[canonicalId]) {
+      if (notes && notes.trim()) {
         local[canonicalId].notes = notes;
-        localStorage.setItem(PROGRESS_KEY, JSON.stringify(local));
+      } else {
+        delete local[canonicalId].notes;
       }
-    } catch (err) {
-      console.warn("[Storage] Failed to save guest note:", err);
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify(local));
     }
+  } catch (err) {
+    console.warn("[Storage] Failed to save note locally:", err);
   }
 
+  // Dispatch events IMMEDIATELY so UI updates across components
   window.dispatchEvent(
     new CustomEvent(NOTES_UPDATED_EVENT, { detail: { problemId: canonicalId, notes } })
   );
   window.dispatchEvent(new Event(PROGRESS_UPDATED_EVENT));
+
+  // 2. If authenticated with Firebase, also sync to Firestore in background
+  const currentUser = auth?.currentUser;
+  if (currentUser && firestoreDb && isFirebaseConfigured) {
+    try {
+      const noteDocRef = doc(firestoreDb, "users", currentUser.uid, "notes", canonicalId);
+      if (notes && notes.trim()) {
+        await setDoc(
+          noteDocRef,
+          {
+            problemId: canonicalId,
+            content: notes,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        );
+      } else {
+        await deleteDoc(noteDocRef);
+      }
+    } catch (err) {
+      console.warn("[Firestore] Failed to save note to cloud:", err);
+    }
+  }
 }
 
 /**
- * Loads all notes for a user from Firestore cloud and seeds the 0ms in-memory cache.
+ * Loads all notes for a user from Firestore cloud and seeds the 0ms in-memory cache and local store.
  */
 export async function loadUserNotesFromCloud(uid: string): Promise<Record<string, string>> {
   if (!firestoreDb || !isFirebaseConfigured) return {};
   try {
     const notesColl = collection(firestoreDb, "users", uid, "notes");
     const snap = await getDocs(notesColl);
-    const notesMap: Record<string, string> = {};
+    const cloudNotes: Record<string, string> = {};
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (data?.content !== undefined) {
-        notesMap[docSnap.id] = data.content;
+        cloudNotes[docSnap.id] = data.content;
       }
     });
 
-    setAllNotesCache(notesMap);
-    return notesMap;
+    // Merge cloud notes with local notes store and runtime cache
+    const localNotes = getAllStoredNotes();
+    const merged = { ...localNotes, ...cloudNotes };
+    localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(merged));
+    setAllNotesCache(merged);
+
+    // DISPATCH EVENT SO ALL REACT COMPONENTS RE-RENDER WITH LOADED NOTES!
+    window.dispatchEvent(new CustomEvent(NOTES_UPDATED_EVENT, { detail: { notesMap: merged } }));
+    window.dispatchEvent(new Event(PROGRESS_UPDATED_EVENT));
+
+    return merged;
   } catch (err) {
     console.warn("[Firestore] Error loading user notes:", err);
     return {};

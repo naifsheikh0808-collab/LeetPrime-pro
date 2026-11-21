@@ -60,7 +60,7 @@ export function QuestionDetailClient({ slug }: { slug: string }) {
 
     const handleNotesEvent = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      if (!detail || detail.problemId === problem.id) {
+      if (!detail || detail.problemId === problem.id || detail.notesMap) {
         syncNote();
       }
     };

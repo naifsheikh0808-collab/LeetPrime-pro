@@ -15,6 +15,7 @@ import {
   BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { tokenizeCode, getTokenClass } from "@/components/ai/PrimeAiMessageRenderer";
 
 interface NotesEditorModalProps {
   isOpen: boolean;
@@ -33,6 +34,24 @@ function escapeHtml(str: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/**
+ * Produces syntax-highlighted HTML spans for the code block in the notes editor.
+ */
+function highlightCodeHtml(code: string, lang = "cpp"): string {
+  if (!code) return "<br>";
+  const tokens = tokenizeCode(code, lang || "cpp");
+  return tokens
+    .map((t) => {
+      const cls = getTokenClass(t.type, t.value);
+      const val = escapeHtml(t.value);
+      if (t.type === "plain") {
+        return val;
+      }
+      return `<span class="${cls}">${val}</span>`;
+    })
+    .join("");
 }
 
 /**
@@ -63,26 +82,32 @@ function extractCodeText(codeEl: HTMLElement): string {
 
 /**
  * Generates interactive collapsible code block HTML for the WYSIWYG editor.
+ * Includes colorful syntax highlighting, interchangeable "Exit to notes / Expand", and delete button.
  */
-function createCodeBlockHtml(code: string, lang = "cpp"): string {
-  const displayLang = lang || "code";
+function createCodeBlockHtml(code: string, lang = "code", isCollapsed = false): string {
   const lines = code.split("\n");
-  const lineCount = lines.length;
-  const escaped = escapeHtml(code);
+  const lineCount = code.trim() ? lines.length : 1;
+  const highlightedCode = highlightCodeHtml(code, lang);
+
+  const chevronText = isCollapsed ? "▶" : "▼";
+  const hiddenCls = isCollapsed ? " hidden" : "";
+  const toggleBtnText = isCollapsed ? "Expand ↗" : "Exit to notes ↓";
+  const toggleAction = isCollapsed ? "expand-code" : "exit-code";
 
   return (
-    `<div class="code-block-container my-3 rounded-xl border border-white/10 bg-[#080914] overflow-hidden select-none" contenteditable="false" data-lang="${displayLang}">` +
+    `<div class="code-block-container my-3 rounded-xl border border-white/10 bg-[#080914] overflow-hidden select-none" contenteditable="false" data-lang="code">` +
       `<div class="code-block-header flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b border-white/[0.08] text-xs text-zinc-400 cursor-pointer hover:bg-white/[0.07] transition-colors" data-action="toggle-collapse">` +
         `<div class="flex items-center gap-2">` +
-          `<span class="code-chevron text-[11px] text-violet-400 font-bold">▼</span>` +
-          `<span class="code-lang-badge px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 text-[10px] font-mono font-bold uppercase">${displayLang}</span>` +
-          `<span class="code-line-count text-[11px] text-zinc-400 font-mono">${lineCount} ${lineCount === 1 ? "line" : "lines"}</span>` +
+          `<span class="code-chevron text-[11px] text-violet-400 font-bold">${chevronText}</span>` +
+          `<span class="code-lang-badge px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 text-[10px] font-mono font-bold">Code</span>` +
+          `<span class="code-line-count text-[11px] text-zinc-400 font-mono">${lineCount} ${lineCount === 1 ? "line" : "lines"}${isCollapsed ? " (collapsed)" : ""}</span>` +
         `</div>` +
-        `<div class="flex items-center gap-2">` +
-          `<span class="code-exit-btn text-[10px] text-violet-400 hover:text-violet-300 hover:underline cursor-pointer" data-action="exit-code" title="Exit code block and write notes below">Exit to notes ↓</span>` +
+        `<div class="flex items-center gap-2.5">` +
+          `<button type="button" class="code-toggle-btn text-[10px] font-medium text-violet-400 hover:text-violet-300 transition-colors cursor-pointer" data-action="${toggleAction}">${toggleBtnText}</button>` +
+          `<button type="button" class="code-delete-btn p-1 rounded hover:bg-red-500/20 text-zinc-400 hover:text-red-400 transition-colors cursor-pointer flex items-center justify-center" data-action="delete-code" title="Delete code block"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>` +
         `</div>` +
       `</div>` +
-      `<pre class="code-content p-3 text-xs font-mono text-cyan-200 leading-relaxed overflow-x-auto whitespace-pre outline-none select-text" contenteditable="true" spellcheck="false">${escaped}</pre>` +
+      `<pre class="code-content p-3 text-xs font-mono text-slate-100 leading-relaxed overflow-x-auto whitespace-pre outline-none select-text${hiddenCls}" contenteditable="true" spellcheck="false">${highlightedCode}</pre>` +
     `</div><p><br></p>`
   );
 }
@@ -549,15 +574,40 @@ export function NotesEditorModal({
     }
   };
 
-  // Helper to exit a code block into the paragraph below
-  const exitCodeBlock = (container: HTMLElement) => {
-    // Auto-collapse code block on exit as requested by user
+  // Helper to expand a collapsed code block
+  const expandCodeBlock = (container: HTMLElement) => {
     const pre = container.querySelector(".code-content") as HTMLElement;
     const chevron = container.querySelector(".code-chevron") as HTMLElement;
     const lineCount = container.querySelector(".code-line-count") as HTMLElement;
+    const toggleBtn = container.querySelector(".code-toggle-btn") as HTMLElement;
+    if (!pre) return;
+
+    pre.classList.remove("hidden");
+    if (chevron) chevron.textContent = "▼";
+    if (toggleBtn) {
+      toggleBtn.textContent = "Exit to notes ↓";
+      toggleBtn.setAttribute("data-action", "exit-code");
+    }
+    const text = extractCodeText(pre);
+    const count = text.split("\n").filter((l) => l.length > 0).length || 1;
+    if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
+    pre.focus();
+    checkActiveFormats();
+  };
+
+  // Helper to exit a code block into the paragraph below and collapse it
+  const exitCodeBlock = (container: HTMLElement) => {
+    const pre = container.querySelector(".code-content") as HTMLElement;
+    const chevron = container.querySelector(".code-chevron") as HTMLElement;
+    const lineCount = container.querySelector(".code-line-count") as HTMLElement;
+    const toggleBtn = container.querySelector(".code-toggle-btn") as HTMLElement;
     if (pre) {
       pre.classList.add("hidden");
       if (chevron) chevron.textContent = "▶";
+      if (toggleBtn) {
+        toggleBtn.textContent = "Expand ↗";
+        toggleBtn.setAttribute("data-action", "expand-code");
+      }
       const text = extractCodeText(pre);
       const count = text.split("\n").filter((l) => l.length > 0).length || 1;
       if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"} (collapsed)`;
@@ -588,28 +638,13 @@ export function NotesEditorModal({
   // Helper to toggle container collapse/expand
   const toggleContainerCollapse = (container: HTMLElement) => {
     const pre = container.querySelector(".code-content") as HTMLElement;
-    const chevron = container.querySelector(".code-chevron") as HTMLElement;
-    const lineCount = container.querySelector(".code-line-count") as HTMLElement;
     if (!pre) return;
 
-    const isCollapsed = pre.classList.contains("hidden");
-    if (isCollapsed) {
-      // Expand
-      pre.classList.remove("hidden");
-      if (chevron) chevron.textContent = "▼";
-      const text = extractCodeText(pre);
-      const count = text.split("\n").length;
-      if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
-      pre.focus();
+    if (pre.classList.contains("hidden")) {
+      expandCodeBlock(container);
     } else {
-      // Collapse
-      pre.classList.add("hidden");
-      if (chevron) chevron.textContent = "▶";
-      const text = extractCodeText(pre);
-      const count = text.split("\n").filter((l) => l.length > 0).length || 1;
-      if (lineCount) lineCount.textContent = `${count} ${count === 1 ? "line" : "lines"} (collapsed)`;
+      exitCodeBlock(container);
     }
-    checkActiveFormats();
   };
 
   // Toggle or exit code block formatting
@@ -650,7 +685,7 @@ export function NotesEditorModal({
     }
 
     // CASE 2: User is in normal notes -> Insert a new code block!
-    const blockHtml = createCodeBlockHtml("", "cpp");
+    const blockHtml = createCodeBlockHtml("", "code");
     document.execCommand("insertHTML", false, blockHtml);
     handleInput();
     checkActiveFormats();
@@ -667,11 +702,45 @@ export function NotesEditorModal({
     }, 30);
   };
 
-  // Click handler on editor to handle collapse/expand and exit clicks
+  // Click handler on editor to handle collapse/expand, exit clicks, and delete code button
   const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
 
-    // 1. Clicked on exit code button
+    // 1. Clicked on delete code block button (Requirement 4)
+    const deleteBtn = target.closest('[data-action="delete-code"]');
+    if (deleteBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const container = deleteBtn.closest(".code-block-container") as HTMLElement;
+      if (container) {
+        let nextEl = container.nextElementSibling as HTMLElement;
+        if (!nextEl || nextEl.tagName.toLowerCase() !== "p") {
+          const p = document.createElement("p");
+          p.innerHTML = "<br>";
+          container.parentNode?.insertBefore(p, container.nextSibling);
+          nextEl = p;
+        }
+        container.remove();
+        nextEl.focus();
+        handleInput();
+        checkActiveFormats();
+      }
+      return;
+    }
+
+    // 2. Clicked on expand button (Requirement 3)
+    const expandBtn = target.closest('[data-action="expand-code"]');
+    if (expandBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const container = expandBtn.closest(".code-block-container") as HTMLElement;
+      if (container) {
+        expandCodeBlock(container);
+      }
+      return;
+    }
+
+    // 3. Clicked on exit code button (Requirement 3)
     const exitBtn = target.closest('[data-action="exit-code"]');
     if (exitBtn) {
       e.preventDefault();
@@ -683,7 +752,7 @@ export function NotesEditorModal({
       return;
     }
 
-    // 2. Clicked on header to collapse/expand
+    // 4. Clicked on header to collapse/expand
     const header = target.closest('[data-action="toggle-collapse"]');
     if (header) {
       e.preventDefault();
@@ -695,7 +764,7 @@ export function NotesEditorModal({
       return;
     }
 
-    // 3. Clicked directly in empty bottom space below all elements
+    // 5. Clicked directly in empty bottom space below all elements
     if (target === editorRef.current && editorRef.current) {
       const lastChild = editorRef.current.lastElementChild;
       if (lastChild && lastChild.tagName.toLowerCase() === "p") {
@@ -817,7 +886,7 @@ export function NotesEditorModal({
 
     if (isCode) {
       e.preventDefault();
-      const blockHtml = createCodeBlockHtml(text, "cpp");
+      const blockHtml = createCodeBlockHtml(text, "code");
       document.execCommand("insertHTML", false, blockHtml);
       handleInput();
       checkActiveFormats();

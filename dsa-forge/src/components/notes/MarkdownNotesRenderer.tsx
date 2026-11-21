@@ -55,7 +55,7 @@ function CollapsibleCodeBlock({
             )}
           </span>
           <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
-            {lang || "CODE"}
+            Code
           </span>
           <span className="text-[11px] text-zinc-400 font-mono">
             {lineCount} {lineCount === 1 ? "line" : "lines"}

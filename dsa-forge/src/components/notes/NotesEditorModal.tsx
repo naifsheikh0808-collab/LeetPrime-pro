@@ -211,6 +211,24 @@ function markdownToHtml(md: string): string {
       const content = trimmed.replace(/^\d+\.\s/, "");
       result.push(`<li>${formatInline(content)}</li>`);
     } else if (trimmed === "") {
+      // Don't insert unnecessary extra enter <p><br></p> if:
+      // 1. Right after or right before a heading (headings already have vertical margins)
+      // 2. Right after or right before a code block (code blocks already have vertical margins)
+      // 3. Right after another <p><br></p> (avoid stacking empty enters)
+      const prev = result[result.length - 1] || "";
+      const isAfterHeading = /<\/(h1|h2|h3)>$/i.test(prev);
+      const isAfterCode = prev.includes("code-block-container");
+      const nextLine = (lines[i + 1] || "").trim();
+      const isBeforeCode = nextLine.startsWith("```");
+      const isBeforeHeading = /^#{1,3}\s/.test(nextLine);
+
+      if (isAfterHeading || isAfterCode || isBeforeCode || isBeforeHeading) {
+        continue;
+      }
+      if (prev.endsWith("<p><br></p>")) {
+        continue;
+      }
+
       if (inUl) { result.push("</ul>"); inUl = false; }
       if (inOl) { result.push("</ol>"); inOl = false; }
       result.push("<p><br></p>");
@@ -237,7 +255,8 @@ function markdownToHtml(md: string): string {
 
 /**
  * Converts WYSIWYG HTML back to clean, compact Markdown string for storage.
- * Accurately extracts code from collapsible code containers without line loss.
+ * Accurately extracts code from collapsible code containers without line loss
+ * and prevents extraneous blank lines around headings, code blocks, and paragraphs.
  */
 function htmlToMarkdown(html: string): string {
   if (!html || !html.trim()) return "";
@@ -246,7 +265,7 @@ function htmlToMarkdown(html: string): string {
   const temp = document.createElement("div");
   temp.innerHTML = html;
 
-  function serializeNode(node: Node): string {
+  function serializeInline(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
       return node.textContent || "";
     }
@@ -256,100 +275,135 @@ function htmlToMarkdown(html: string): string {
     const el = node as HTMLElement;
     const tag = el.tagName.toLowerCase();
 
-    // 1. Interactive collapsible code container
-    if (el.classList.contains("code-block-container")) {
-      const pre = el.querySelector(".code-content") as HTMLElement;
-      const lang = el.getAttribute("data-lang") || "";
-      const code = pre ? extractCodeText(pre) : "";
-      return `\n\`\`\`${lang}\n${code.trimEnd()}\n\`\`\`\n`;
-    }
-
-    // 2. Bare code block (<pre>)
-    if (tag === "pre") {
-      const code = extractCodeText(el);
-      const lang = el.getAttribute("data-lang") || "";
-      return `\n\`\`\`${lang}\n${code.trimEnd()}\n\`\`\`\n`;
-    }
-
-    // Inline code or Prime AI highlight (not inside a pre)
+    // Inline code or Prime AI highlight
     if (tag === "code" || tag === "mark") {
       const inner = (el.textContent || "").replace(/\u200B/g, "").trim();
       return inner ? `\`${inner.replace(/`/g, "")}\`` : "";
     }
-
     // Bold
     if (tag === "b" || tag === "strong") {
-      const inner = Array.from(el.childNodes).map(serializeNode).join("");
+      const inner = Array.from(el.childNodes).map(serializeInline).join("");
       return inner.trim() ? `**${inner}**` : "";
     }
-
     // Italic
     if (tag === "i" || tag === "em") {
-      const inner = Array.from(el.childNodes).map(serializeNode).join("");
+      const inner = Array.from(el.childNodes).map(serializeInline).join("");
       return inner.trim() ? `*${inner}*` : "";
     }
-
     // Underline
     if (tag === "u") {
-      const inner = Array.from(el.childNodes).map(serializeNode).join("");
+      const inner = Array.from(el.childNodes).map(serializeInline).join("");
       return inner.trim() ? `<u>${inner}</u>` : "";
     }
-
-    // Headings
-    if (tag === "h1") {
-      const inner = Array.from(el.childNodes).map(serializeNode).join("").trim();
-      return inner ? `\n# ${inner}\n` : "";
-    }
-    if (tag === "h2") {
-      const inner = Array.from(el.childNodes).map(serializeNode).join("").trim();
-      return inner ? `\n## ${inner}\n` : "";
-    }
-    if (tag === "h3") {
-      const inner = Array.from(el.childNodes).map(serializeNode).join("").trim();
-      return inner ? `\n### ${inner}\n` : "";
-    }
-
-    // Lists
-    if (tag === "ul") {
-      const items = Array.from(el.querySelectorAll(":scope > li"))
-        .map((li) => `- ${Array.from(li.childNodes).map(serializeNode).join("").trim()}`)
-        .join("\n");
-      return items ? `\n${items}\n` : "";
-    }
-    if (tag === "ol") {
-      const items = Array.from(el.querySelectorAll(":scope > li"))
-        .map((li, idx) => `${idx + 1}. ${Array.from(li.childNodes).map(serializeNode).join("").trim()}`)
-        .join("\n");
-      return items ? `\n${items}\n` : "";
-    }
-    if (tag === "li") {
-      return Array.from(el.childNodes).map(serializeNode).join("");
-    }
-
-    // Line breaks
     if (tag === "br") {
       return "\n";
     }
+    return Array.from(el.childNodes).map(serializeInline).join("");
+  }
 
-    // Paragraphs and Divs
-    if (tag === "p" || tag === "div") {
+  const blocks: string[] = [];
+
+  function processBlockNode(node: Node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || "";
+      if (text.trim()) {
+        blocks.push(text.trim());
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+
+    // 1. Collapsible Code Block Container or pre
+    if (el.classList.contains("code-block-container") || tag === "pre") {
+      const pre = (el.querySelector(".code-content") as HTMLElement) || el;
+      const lang = el.getAttribute("data-lang") || "";
+      const code = extractCodeText(pre).trimEnd();
+      blocks.push(`\`\`\`${lang}\n${code}\n\`\`\``);
+      return;
+    }
+
+    // 2. Headings
+    if (tag === "h1") {
+      const inner = serializeInline(el).trim();
+      if (inner) blocks.push(`# ${inner}`);
+      return;
+    }
+    if (tag === "h2") {
+      const inner = serializeInline(el).trim();
+      if (inner) blocks.push(`## ${inner}`);
+      return;
+    }
+    if (tag === "h3") {
+      const inner = serializeInline(el).trim();
+      if (inner) blocks.push(`### ${inner}`);
+      return;
+    }
+
+    // 3. Lists
+    if (tag === "ul") {
+      const items = Array.from(el.querySelectorAll(":scope > li"))
+        .map((li) => `- ${serializeInline(li).trim()}`)
+        .join("\n");
+      if (items) blocks.push(items);
+      return;
+    }
+    if (tag === "ol") {
+      const items = Array.from(el.querySelectorAll(":scope > li"))
+        .map((li, idx) => `${idx + 1}. ${serializeInline(li).trim()}`)
+        .join("\n");
+      if (items) blocks.push(items);
+      return;
+    }
+
+    // 4. Paragraph
+    if (tag === "p") {
       const text = el.textContent || "";
       const isBlank =
         (!text.trim() && el.querySelectorAll("br").length > 0) ||
         (!text.trim() && el.children.length === 0);
       if (isBlank) {
-        return "\n\n";
+        blocks.push("");
+        return;
       }
-      const inner = Array.from(el.childNodes).map(serializeNode).join("");
-      return `\n${inner}`;
+      const inner = serializeInline(el);
+      blocks.push(inner);
+      return;
     }
 
-    // Fallback: child nodes (span, etc.)
-    return Array.from(el.childNodes).map(serializeNode).join("");
+    // 5. Generic Div / Wrapper
+    if (tag === "div") {
+      const hasBlockChildren = el.querySelector("p, h1, h2, h3, ul, ol, pre, .code-block-container");
+      if (hasBlockChildren) {
+        Array.from(el.childNodes).forEach(processBlockNode);
+        return;
+      }
+      const text = el.textContent || "";
+      const isBlank =
+        (!text.trim() && el.querySelectorAll("br").length > 0) ||
+        (!text.trim() && el.children.length === 0);
+      if (isBlank) {
+        blocks.push("");
+        return;
+      }
+      const inner = serializeInline(el);
+      blocks.push(inner);
+      return;
+    }
+
+    // Fallback: child elements (span, etc.)
+    const inner = serializeInline(el);
+    if (inner.trim()) {
+      blocks.push(inner);
+    }
   }
 
-  const raw = Array.from(temp.childNodes).map(serializeNode).join("");
-  return raw
+  Array.from(temp.childNodes).forEach(processBlockNode);
+
+  return blocks
+    .join("\n")
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((l) => l.trimEnd())
@@ -895,10 +949,51 @@ export function NotesEditorModal({
     } else {
       // Text is selected -> wrap selection in prime-highlight badge
       const selectedContent = range.extractContents();
-      const highlightEl = document.createElement("code");
+
+      // Unwrap any existing nested highlight elements inside selectedContent to prevent double-highlighting / overlapping!
+      const nested = selectedContent.querySelectorAll(".prime-highlight, code, mark");
+      nested.forEach((el) => {
+        if (!el.closest(".code-block-container") && !el.closest("pre")) {
+          const parent = el.parentNode;
+          if (parent) {
+            while (el.firstChild) {
+              parent.insertBefore(el.firstChild, el);
+            }
+            el.remove();
+          }
+        }
+      });
+
+      let highlightEl: HTMLElement = document.createElement("code");
       highlightEl.className = highlightClasses;
       highlightEl.appendChild(selectedContent);
       range.insertNode(highlightEl);
+
+      // Merge with adjacent highlight siblings if touching to form a single continuous badge
+      const prev = highlightEl.previousSibling;
+      if (
+        prev &&
+        prev.nodeType === Node.ELEMENT_NODE &&
+        (prev as HTMLElement).classList.contains("prime-highlight")
+      ) {
+        while (highlightEl.firstChild) {
+          prev.appendChild(highlightEl.firstChild);
+        }
+        highlightEl.remove();
+        highlightEl = prev as HTMLElement;
+      }
+
+      const next = highlightEl.nextSibling;
+      if (
+        next &&
+        next.nodeType === Node.ELEMENT_NODE &&
+        (next as HTMLElement).classList.contains("prime-highlight")
+      ) {
+        while (next.firstChild) {
+          highlightEl.appendChild(next.firstChild);
+        }
+        next.remove();
+      }
 
       // Keep newly highlighted text selected
       const newRange = document.createRange();

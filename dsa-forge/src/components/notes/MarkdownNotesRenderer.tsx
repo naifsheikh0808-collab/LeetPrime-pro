@@ -181,7 +181,7 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
       parts.push(
         <code
           key={key}
-          className="bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md"
+          className="bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5"
         >
           {code}
         </code>

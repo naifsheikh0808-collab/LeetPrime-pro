@@ -47,11 +47,13 @@ export function QuestionDetailClient({ slug }: { slug: string }) {
 
   const { progress, updateStatus } = useProgressStore();
   const currentStatus = (progress[problem.id]?.status ?? "todo") as ProgressStatus;
-  const [notes, setNotes] = useState(() => getProblemNotes(problem.id) || progress[problem.id]?.notes || "");
+  const [mounted, setMounted] = useState(false);
+  const [notes, setNotes] = useState("");
   const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
   const [isAiOpen, setIsAiOpen] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     const syncNote = () => {
       const current = getProblemNotes(problem.id) || progress[problem.id]?.notes || "";
       setNotes(current);
@@ -251,7 +253,7 @@ export function QuestionDetailClient({ slug }: { slug: string }) {
                     onClick={() => setIsNotesModalOpen(true)}
                     className="group relative w-full bg-zinc-900/40 hover:bg-zinc-900/75 border border-zinc-800 hover:border-violet-500/40 hover:shadow-[0_0_16px_rgba(124,58,237,0.12)] rounded-xl p-3.5 sm:p-4 text-xs sm:text-sm transition-all cursor-pointer min-h-[96px] max-h-[155px] overflow-hidden"
                   >
-                    {notes.trim().length > 0 ? (
+                    {mounted && notes.trim().length > 0 ? (
                       <div className="relative">
                         <MarkdownNotesRenderer content={notes} isCompact={true} />
                       </div>

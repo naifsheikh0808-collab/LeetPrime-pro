@@ -126,9 +126,9 @@ function markdownToHtml(md: string): string {
   if (!md || !md.trim()) return "<p><br></p>";
   const trimmedMd = md.trim();
 
-  // If already legacy HTML format without markdown fences, return directly
+  // If already legacy HTML format without markdown fences, return directly (cleansed of legacy atomic blocks)
   if (/^<(p|div|h1|h2|ul|ol|pre)\b/i.test(trimmedMd) && !trimmedMd.includes("```")) {
-    return trimmedMd;
+    return trimmedMd.replace(/\s*inline-block\s+align-baseline/g, "");
   }
 
   const formatInline = (str: string) => {
@@ -140,7 +140,7 @@ function markdownToHtml(md: string): string {
       .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
       .replace(
         /&lt;mark&gt;(.*?)&lt;\/mark&gt;/gi,
-        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md">$1</code>'
+        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">$1</code>'
       );
 
     return safe
@@ -149,7 +149,7 @@ function markdownToHtml(md: string): string {
       .replace(/\*([^*]+?)\*/g, "<i>$1</i>")
       .replace(
         /`([^`]+)`/g,
-        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md">$1</code>'
+        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">$1</code>'
       );
   };
 
@@ -358,6 +358,34 @@ function htmlToMarkdown(html: string): string {
     .trim();
 }
 
+/**
+ * Converts Markdown string to clean plain text for .txt export,
+ * ensuring all code blocks are fully included even if collapsed in the UI,
+ * while removing visual markdown formatting syntax and UI buttons.
+ */
+function markdownToPlainText(md: string): string {
+  if (!md) return "";
+  return md
+    // Clean code blocks: include the full code lines with clean text dividers
+    .replace(/```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)```/g, (_match, code) => {
+      return `\n${"-".repeat(25)} Code ${"-".repeat(25)}\n${code.trim()}\n${"-".repeat(56)}\n`;
+    })
+    // Headings
+    .replace(/^#{1,6}\s+(.*)$/gm, "$1")
+    // Bold, Underline, Italic
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/<u>(.*?)<\/u>/gi, "$1")
+    // Inline code / highlight badges
+    .replace(/`([^`]+)`/g, "$1")
+    // HTML tags if any
+    .replace(/<[^>]+>/g, "")
+    // Clean redundant blank lines
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function NotesEditorModal({
   isOpen,
   onClose,
@@ -519,36 +547,35 @@ export function NotesEditorModal({
 
   // Handle typing & content change without triggering ANY React re-renders (zero thread blocking)
   const handleInput = () => {
-    // 0. Clean up any zero-width space in prime-highlight elements that have real text
+    // 0. Clean up any zero-width space in any text node that has real text
     if (editorRef.current) {
-      const highlights = editorRef.current.querySelectorAll(".prime-highlight");
-      highlights.forEach((hl) => {
-        if (hl.childNodes.length === 1 && hl.firstChild?.nodeType === Node.TEXT_NODE) {
-          const tNode = hl.firstChild as Text;
-          if (tNode.data.includes("\u200B") && tNode.data.length > 1) {
-            const sel = window.getSelection();
-            let currentOffset = -1;
-            let isCurrentNode = false;
-            if (sel && sel.rangeCount > 0) {
-              const r = sel.getRangeAt(0);
-              if (r.startContainer === tNode) {
-                isCurrentNode = true;
-                currentOffset = r.startOffset;
-              }
-            }
-            const zwsIndex = tNode.data.indexOf("\u200B");
-            tNode.data = tNode.data.replace(/\u200B/g, "");
-            if (isCurrentNode && sel && currentOffset >= 0) {
-              const newOffset = zwsIndex < currentOffset ? Math.max(0, currentOffset - 1) : currentOffset;
-              const newR = document.createRange();
-              newR.setStart(tNode, Math.min(newOffset, tNode.data.length));
-              newR.collapse(true);
-              sel.removeAllRanges();
-              sel.addRange(newR);
+      const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT);
+      let textNode = walker.nextNode() as Text | null;
+      while (textNode) {
+        if (textNode.data.includes("\u200B") && textNode.data.length > 1) {
+          const sel = window.getSelection();
+          let currentOffset = -1;
+          let isCurrentNode = false;
+          if (sel && sel.rangeCount > 0) {
+            const r = sel.getRangeAt(0);
+            if (r.startContainer === textNode) {
+              isCurrentNode = true;
+              currentOffset = r.startOffset;
             }
           }
+          const zwsIndex = textNode.data.indexOf("\u200B");
+          textNode.data = textNode.data.replace(/\u200B/g, "");
+          if (isCurrentNode && sel && currentOffset >= 0) {
+            const newOffset = zwsIndex < currentOffset ? Math.max(0, currentOffset - 1) : currentOffset;
+            const newR = document.createRange();
+            newR.setStart(textNode, Math.min(newOffset, textNode.data.length));
+            newR.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newR);
+          }
         }
-      });
+        textNode = walker.nextNode() as Text | null;
+      }
     }
 
     // 1. Direct DOM update for word count (0ms, 0 React renders)
@@ -747,7 +774,7 @@ export function NotesEditorModal({
 
     // CASE 1: Cursor or selection is ALREADY inside a highlight -> UNAPPLY or EXIT
     const highlightClasses =
-      "prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md";
+      "prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5";
 
     if (existingHighlight) {
       if (range.collapsed) {
@@ -914,12 +941,8 @@ export function NotesEditorModal({
 
   const exportAsText = () => {
     try {
-      let plain = "";
-      if (editorRef.current) {
-        plain = editorRef.current.innerText || "";
-      } else {
-        plain = initialNotes;
-      }
+      const md = editorRef.current ? htmlToMarkdown(editorRef.current.innerHTML) : initialNotes;
+      const plain = markdownToPlainText(md);
       const header = `${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}\nLeetPrime Notes\n${"-".repeat(40)}\n\n`;
       const fullContent = header + plain;
 
@@ -1267,6 +1290,25 @@ export function NotesEditorModal({
       }
     }
 
+    // 6. Clicked on or near the right boundary of an inline highlight badge -> land in next text node at offset 0
+    const highlight = target.closest(".prime-highlight, code:not(.code-content)") as HTMLElement | null;
+    if (highlight && !highlight.closest(".code-block-container") && !highlight.closest("pre")) {
+      const rect = highlight.getBoundingClientRect();
+      if (e.clientX >= rect.right - 8) {
+        const next = highlight.nextSibling;
+        if (next && next.nodeType === Node.TEXT_NODE) {
+          const newRange = document.createRange();
+          newRange.setStart(next, 0);
+          newRange.collapse(true);
+          const sel = window.getSelection();
+          if (sel) {
+            sel.removeAllRanges();
+            sel.addRange(newRange);
+          }
+        }
+      }
+    }
+
     checkActiveFormats();
   };
 
@@ -1322,6 +1364,123 @@ export function NotesEditorModal({
             }
           }
         }, 10);
+      }
+      return;
+    }
+
+    // ── Boundary & Arrow Navigation for Inline Highlight Badges (prevents caret skipping) ──
+    if (sel && sel.rangeCount > 0 && sel.isCollapsed) {
+      const range = sel.getRangeAt(0);
+      const container = range.startContainer;
+      const offset = range.startOffset;
+
+      // Find if we are currently inside or directly adjacent to a prime-highlight
+      let highlightEl: HTMLElement | null = null;
+      let currNode: Node | null = container;
+      while (currNode && currNode !== editorRef.current) {
+        if (currNode.nodeType === Node.ELEMENT_NODE) {
+          const el = currNode as HTMLElement;
+          if (
+            el.classList.contains("prime-highlight") ||
+            (el.tagName.toLowerCase() === "code" && !el.closest(".code-block-container") && !el.closest("pre"))
+          ) {
+            highlightEl = el;
+            break;
+          }
+        }
+        currNode = currNode.parentNode;
+      }
+
+      if (highlightEl) {
+        // Cursor is INSIDE the highlight element
+        const isAtEnd =
+          container === highlightEl
+            ? offset === highlightEl.childNodes.length
+            : offset === (container.textContent?.length ?? 0);
+
+        // Case 1: ArrowRight at the end of highlight -> move directly to offset 0 of next sibling
+        if (e.key === "ArrowRight" && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && isAtEnd) {
+          const next = highlightEl.nextSibling;
+          if (next) {
+            e.preventDefault();
+            const newRange = document.createRange();
+            if (next.nodeType === Node.TEXT_NODE) {
+              newRange.setStart(next, 0);
+            } else {
+              newRange.setStartBefore(next);
+            }
+            newRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
+            checkActiveFormats();
+            return;
+          } else {
+            e.preventDefault();
+            const emptyText = document.createTextNode("");
+            highlightEl.parentNode?.appendChild(emptyText);
+            const newRange = document.createRange();
+            newRange.setStart(emptyText, 0);
+            newRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
+            checkActiveFormats();
+            return;
+          }
+        }
+
+        // Case 2: Space at the end of highlight -> exit highlight and insert space outside
+        if (e.key === " " && isAtEnd && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+          e.preventDefault();
+          const next = highlightEl.nextSibling;
+          if (next && next.nodeType === Node.TEXT_NODE) {
+            const nextText = next as Text;
+            nextText.insertData(0, " ");
+            const newRange = document.createRange();
+            newRange.setStart(nextText, 1);
+            newRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
+          } else {
+            const spaceText = document.createTextNode(" ");
+            if (next) {
+              highlightEl.parentNode?.insertBefore(spaceText, next);
+            } else {
+              highlightEl.parentNode?.appendChild(spaceText);
+            }
+            const newRange = document.createRange();
+            newRange.setStart(spaceText, 1);
+            newRange.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
+          }
+          handleInput();
+          checkActiveFormats();
+          return;
+        }
+      } else {
+        // Cursor is OUTSIDE highlight, check if in a text node directly following a highlight
+        if (container.nodeType === Node.TEXT_NODE) {
+          const prev = container.previousSibling;
+          if (
+            prev &&
+            prev.nodeType === Node.ELEMENT_NODE &&
+            ((prev as HTMLElement).classList.contains("prime-highlight") ||
+              (prev as HTMLElement).tagName.toLowerCase() === "code")
+          ) {
+            // We are in text immediately after a highlight!
+            // If at offset 1 and user presses ArrowLeft, land at offset 0 (before the first character) instead of jumping past it!
+            if (e.key === "ArrowLeft" && offset === 1 && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+              e.preventDefault();
+              const newRange = document.createRange();
+              newRange.setStart(container, 0);
+              newRange.collapse(true);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+              checkActiveFormats();
+              return;
+            }
+          }
+        }
       }
     }
   };
@@ -1648,7 +1807,7 @@ export function NotesEditorModal({
               "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ul]:space-y-1",
               "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_ol]:space-y-1",
               "[&_p]:my-1.5 [&_p]:text-sm [&_p]:sm:text-base [&_p]:text-zinc-100",
-              "[&_code]:bg-amber-400/25 [&_code]:border [&_code]:border-amber-400/50 [&_code]:text-amber-200 [&_code]:shadow-[0_0_10px_rgba(245,158,11,0.2)] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:text-[12px] [&_code]:font-mono [&_code]:font-semibold",
+              "[&_code]:bg-amber-400/25 [&_code]:border [&_code]:border-amber-400/50 [&_code]:text-amber-200 [&_code]:shadow-[0_0_10px_rgba(245,158,11,0.2)] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:text-[12px] [&_code]:font-mono [&_code]:font-semibold [&_code]:mx-0.5",
               // Collapsible Code Block Container Styles
               "[&_.code-block-container]:my-3 [&_.code-block-container]:rounded-xl [&_.code-block-container]:border [&_.code-block-container]:border-white/10 [&_.code-block-container]:bg-[#080914] [&_.code-block-container]:overflow-hidden [&_.code-block-container]:shadow-md",
               "[&_.code-content]:p-3 [&_.code-content]:text-xs [&_.code-content]:font-mono [&_.code-content]:text-cyan-200 [&_.code-content]:leading-relaxed [&_.code-content]:overflow-x-auto [&_.code-content]:whitespace-pre [&_.code-content]:outline-none",

@@ -38,7 +38,7 @@ function CollapsibleCodeBlock({
     <div
       className={cn(
         "my-2.5 rounded-xl border border-white/10 bg-[#080914] overflow-hidden shadow-lg transition-all",
-        isCompact && "my-1.5"
+        isCompact && "my-1 sm:my-1.5 rounded-lg border-white/[0.08] bg-white/[0.02] shadow-none"
       )}
     >
       {/* Header with collapse toggle, language badge, line count, and copy button */}
@@ -52,24 +52,47 @@ function CollapsibleCodeBlock({
           e.stopPropagation();
           setIsCollapsed(!isCollapsed);
         }}
-        className="flex items-center justify-between px-3 py-1.5 bg-white/[0.04] border-b border-white/[0.08] cursor-pointer hover:bg-white/[0.07] transition-colors select-none"
+        className={cn(
+          "flex items-center justify-between px-3 py-1.5 bg-white/[0.04] transition-colors select-none",
+          !isCollapsed && !isCompact ? "border-b border-white/[0.08]" : "",
+          isCompact
+            ? "px-2 sm:px-2.5 py-1 sm:py-1.5 bg-white/[0.025] hover:bg-white/[0.05]"
+            : "cursor-pointer hover:bg-white/[0.07]"
+        )}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-zinc-400 hover:text-white transition-colors">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <span className="text-zinc-400 hover:text-white transition-colors shrink-0">
             {isCollapsed ? (
-              <ChevronRight className="w-3.5 h-3.5 text-violet-400" />
+              <ChevronRight className={cn("text-violet-400", isCompact ? "w-3 h-3" : "w-3.5 h-3.5")} />
             ) : (
-              <ChevronDown className="w-3.5 h-3.5 text-violet-400" />
+              <ChevronDown className={cn("text-violet-400", isCompact ? "w-3 h-3" : "w-3.5 h-3.5")} />
             )}
           </span>
-          <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
+          <span
+            className={cn(
+              "font-mono font-bold uppercase tracking-wider rounded shrink-0",
+              isCompact
+                ? "text-[9.5px] px-1.5 py-0.5 bg-violet-500/15 text-violet-300 border border-violet-500/25"
+                : "text-[10px] px-1.5 py-0.5 bg-violet-500/20 text-violet-300 border border-violet-500/30"
+            )}
+          >
             Code
           </span>
-          <span className="text-[11px] text-zinc-400 font-mono">
+          <span
+            className={cn(
+              "text-zinc-400 font-mono shrink-0",
+              isCompact ? "text-[10.5px] sm:text-[11px]" : "text-[11px]"
+            )}
+          >
             {lineCount} {lineCount === 1 ? "line" : "lines"}
           </span>
           {isCollapsed && (
-            <span className="text-[10px] text-zinc-400 italic">
+            <span
+              className={cn(
+                "text-zinc-400 italic truncate",
+                isCompact ? "hidden md:inline text-[10px] text-zinc-500" : "text-[10px]"
+              )}
+            >
               · Click to expand
             </span>
           )}
@@ -78,18 +101,21 @@ function CollapsibleCodeBlock({
         <button
           onClick={handleCopy}
           type="button"
-          className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+          className={cn(
+            "flex items-center gap-1 rounded font-medium text-zinc-400 hover:text-white hover:bg-white/10 transition-colors shrink-0",
+            isCompact ? "px-1.5 sm:px-2 py-0.5 text-[10px]" : "px-2 py-0.5 text-[10px]"
+          )}
           title="Copy code"
         >
           {copied ? (
             <>
-              <Check className="w-3 h-3 text-emerald-400" />
-              <span className="text-emerald-400">Copied</span>
+              <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+              <span className={cn("text-emerald-400", isCompact && "hidden sm:inline")}>Copied</span>
             </>
           ) : (
             <>
-              <Copy className="w-3 h-3" />
-              <span>Copy</span>
+              <Copy className="w-3 h-3 shrink-0" />
+              <span className={cn(isCompact && "hidden sm:inline")}>Copy</span>
             </>
           )}
         </button>
@@ -201,7 +227,7 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
       parts.push(
         <code
           key={key}
-          className="bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5"
+          className="bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[11px] sm:text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5 break-words [word-break:break-word] inline-block align-baseline max-w-full"
         >
           {code}
         </code>
@@ -417,7 +443,7 @@ export function MarkdownNotesRenderer({
     <div
       className={cn(
         "space-y-2.5 text-zinc-200 leading-relaxed font-sans select-text",
-        isCompact ? "text-xs space-y-1.5" : "text-xs sm:text-sm",
+        isCompact ? "text-xs space-y-1 sm:space-y-1.5" : "text-xs sm:text-sm",
         className
       )}
     >
@@ -429,7 +455,7 @@ export function MarkdownNotesRenderer({
                 key={idx}
                 className={cn(
                   "font-bold text-white border-b border-white/10 pb-1 tracking-tight",
-                  isCompact ? "text-sm mt-1 mb-0.5" : "text-base sm:text-lg mt-3 mb-1.5"
+                  isCompact ? "text-xs sm:text-sm mt-0.5 mb-0.5 pb-0.5" : "text-base sm:text-lg mt-3 mb-1.5"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -442,7 +468,7 @@ export function MarkdownNotesRenderer({
                 key={idx}
                 className={cn(
                   "font-bold text-violet-300 tracking-tight",
-                  isCompact ? "text-xs mt-1 mb-0.5" : "text-sm sm:text-base mt-2.5 mb-1"
+                  isCompact ? "text-xs mt-0.5 mb-0.5" : "text-sm sm:text-base mt-2.5 mb-1"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -455,7 +481,7 @@ export function MarkdownNotesRenderer({
                 key={idx}
                 className={cn(
                   "font-semibold text-cyan-300 tracking-tight",
-                  isCompact ? "text-[11px] mt-0.5" : "text-xs sm:text-sm mt-2 mb-0.5"
+                  isCompact ? "text-[11px] mt-0.5 mb-0.5" : "text-xs sm:text-sm mt-2 mb-0.5"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -466,7 +492,10 @@ export function MarkdownNotesRenderer({
             return (
               <blockquote
                 key={idx}
-                className="border-l-2 border-violet-500/70 bg-violet-950/20 pl-3 pr-2 py-1 my-1.5 rounded-r-lg text-zinc-300 text-xs italic"
+                className={cn(
+                  "border-l-2 border-violet-500/70 bg-violet-950/20 pl-3 pr-2 py-1 my-1.5 rounded-r-lg text-zinc-300 text-xs italic",
+                  isCompact && "py-0.5 my-1 text-[11px]"
+                )}
               >
                 {renderInlineTokens(block.text || "")}
               </blockquote>
@@ -474,9 +503,9 @@ export function MarkdownNotesRenderer({
 
           case "ul":
             return (
-              <ul key={idx} className="space-y-1 my-1 pl-1">
+              <ul key={idx} className={cn("space-y-1 my-1 pl-1", isCompact && "space-y-0.5 my-0.5")}>
                 {block.items?.map((item, i) => (
-                  <li key={i} className="flex items-start gap-2 text-zinc-200 text-xs leading-relaxed">
+                  <li key={i} className="flex items-start gap-1.5 sm:gap-2 text-zinc-200 text-xs leading-relaxed">
                     <span className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-1.5 shrink-0 shadow-sm shadow-violet-500/40" />
                     <span className="flex-1 min-w-0">{renderInlineTokens(item)}</span>
                   </li>
@@ -486,10 +515,10 @@ export function MarkdownNotesRenderer({
 
           case "ol":
             return (
-              <ol key={idx} className="space-y-1 my-1 pl-1 counter-reset-item">
+              <ol key={idx} className={cn("space-y-1 my-1 pl-1 counter-reset-item", isCompact && "space-y-0.5 my-0.5")}>
                 {block.items?.map((item, i) => (
-                  <li key={i} className="flex items-start gap-2 text-zinc-200 text-xs leading-relaxed">
-                    <span className="font-mono text-[10px] font-bold text-violet-400/90 shrink-0 mt-0.5 w-4 text-right">
+                  <li key={i} className="flex items-start gap-1 sm:gap-2 text-zinc-200 text-xs leading-relaxed">
+                    <span className="font-mono text-[10px] font-bold text-violet-400/90 shrink-0 mt-0.5 w-3.5 sm:w-4 text-right">
                       {i + 1}.
                     </span>
                     <span className="flex-1 min-w-0">{renderInlineTokens(item)}</span>

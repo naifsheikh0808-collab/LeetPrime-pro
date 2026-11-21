@@ -1615,6 +1615,7 @@ export function NotesEditorModal({
       }
     }
 
+    // CASE 1: Inside an existing code block -> insert plain text into code
     if (insideCode && codeContentEl) {
       e.preventDefault();
       document.execCommand("insertText", false, text);
@@ -1632,17 +1633,41 @@ export function NotesEditorModal({
       return;
     }
 
-    // Outside code block: detect if pasted content is code
-    const isCode =
-      text.includes("\n") &&
-      (/[{}();=>]|^\s{2,}|\b(def|class|function|var|let|const|int|public|private|void|return|if|for|while|import|include)\b/m.test(text) ||
-        text.trim().startsWith("//") ||
-        text.trim().startsWith("#"));
-
-    if (isCode) {
+    // CASE 2: Outside code block
+    // ONLY create a code block if the text explicitly contains fenced markdown code blocks (``` ... ```)
+    const trimmed = text.trim();
+    if (trimmed.startsWith("```") && trimmed.endsWith("```") && trimmed.length > 6) {
       e.preventDefault();
-      const blockHtml = createCodeBlockHtml(text, "code");
+      const firstLineEnd = trimmed.indexOf("\n");
+      let lang = "code";
+      let code = "";
+      if (firstLineEnd !== -1) {
+        lang = trimmed.slice(3, firstLineEnd).trim() || "code";
+        code = trimmed.slice(firstLineEnd + 1, trimmed.length - 3).trimEnd();
+      } else {
+        code = trimmed.slice(3, -3).trimEnd();
+      }
+      const blockHtml = createCodeBlockHtml(code, lang);
       document.execCommand("insertHTML", false, blockHtml);
+      handleInput();
+      checkActiveFormats();
+      return;
+    }
+
+    // CASE 3: Normal text paste (from MS Word, plain text, browser, or anywhere else)
+    // NEVER forcibly convert plain text, comments (//), or equations into code blocks!
+    const html = e.clipboardData.getData("text/html");
+    const isOfficeHtml =
+      html &&
+      (html.includes("urn:schemas-microsoft-com:office") ||
+        html.includes("class=\"Mso") ||
+        html.includes("class='Mso") ||
+        html.includes("mso-"));
+
+    // If copied from MS Word or if it's plain text without HTML, paste clean text directly
+    if (isOfficeHtml || !html) {
+      e.preventDefault();
+      document.execCommand("insertText", false, text);
       handleInput();
       checkActiveFormats();
       return;

@@ -6,6 +6,7 @@ import {
   Bold,
   Italic,
   Underline,
+  Highlighter,
   Heading1,
   Heading2,
   List,
@@ -84,7 +85,7 @@ function extractCodeText(codeEl: HTMLElement): string {
  * Generates interactive collapsible code block HTML for the WYSIWYG editor.
  * Includes colorful syntax highlighting, interchangeable "Exit to notes / Expand", and delete button.
  */
-function createCodeBlockHtml(code: string, lang = "code", isCollapsed = false): string {
+function createCodeBlockHtml(code: string, lang = "code", isCollapsed = true): string {
   const lines = code.split("\n");
   const lineCount = code.trim() ? lines.length : 1;
   const highlightedCode = highlightCodeHtml(code, lang);
@@ -126,18 +127,25 @@ function markdownToHtml(md: string): string {
   }
 
   const formatInline = (str: string) => {
-    // Preserve <u> tags while escaping bare HTML brackets
+    // Preserve <u> and <mark> tags while escaping bare HTML brackets
     const safe = str
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>");
+      .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
+      .replace(
+        /&lt;mark&gt;(.*?)&lt;\/mark&gt;/gi,
+        '<code class="prime-highlight px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 font-mono text-[12px] font-semibold tracking-tight inline-block align-baseline">$1</code>'
+      );
 
     return safe
       .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
       .replace(/__(.+?)__/g, "<u>$1</u>")
       .replace(/\*([^*]+?)\*/g, "<i>$1</i>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
+      .replace(
+        /`([^`]+)`/g,
+        '<code class="prime-highlight px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 font-mono text-[12px] font-semibold tracking-tight inline-block align-baseline">$1</code>'
+      );
   };
 
   const lines = trimmedMd.split(/\r?\n/);
@@ -155,9 +163,9 @@ function markdownToHtml(md: string): string {
     // Fenced Code Block start / end
     if (trimmed.startsWith("```")) {
       if (inCode) {
-        // Close code block
+        // Close code block (ALWAYS collapsed by default when opening notes)
         inCode = false;
-        result.push(createCodeBlockHtml(codeLines.join("\n"), codeLang));
+        result.push(createCodeBlockHtml(codeLines.join("\n"), codeLang, true));
         codeLines = [];
         codeLang = "";
       } else {
@@ -209,7 +217,7 @@ function markdownToHtml(md: string): string {
   }
 
   if (inCode) {
-    result.push(createCodeBlockHtml(codeLines.join("\n"), codeLang));
+    result.push(createCodeBlockHtml(codeLines.join("\n"), codeLang, true));
   }
   if (inUl) result.push("</ul>");
   if (inOl) result.push("</ol>");
@@ -258,9 +266,10 @@ function htmlToMarkdown(html: string): string {
       return `\n\`\`\`${lang}\n${code.trimEnd()}\n\`\`\`\n`;
     }
 
-    // Inline code (not inside a pre)
-    if (tag === "code") {
-      return `\`${el.textContent || ""}\``;
+    // Inline code or Prime AI highlight (not inside a pre)
+    if (tag === "code" || tag === "mark") {
+      const inner = (el.textContent || "").replace(/\u200B/g, "").trim();
+      return inner ? `\`${inner.replace(/`/g, "")}\`` : "";
     }
 
     // Bold
@@ -363,6 +372,7 @@ export function NotesEditorModal({
     bold: false,
     italic: false,
     underline: false,
+    highlight: false,
     h1: false,
     h2: false,
     ul: false,
@@ -380,6 +390,7 @@ export function NotesEditorModal({
     let bold = false;
     let italic = false;
     let underline = false;
+    let highlight = false;
     let ul = false;
     let ol = false;
     let h1 = false;
@@ -404,7 +415,14 @@ export function NotesEditorModal({
       if (node.nodeType === Node.ELEMENT_NODE) {
         const el = node as HTMLElement;
         const tag = el.tagName.toLowerCase();
-        if (el.classList.contains("code-block-container") || el.classList.contains("code-content") || tag === "pre" || tag === "code") {
+        if (
+          el.classList.contains("prime-highlight") ||
+          tag === "mark" ||
+          (tag === "code" && !el.closest(".code-block-container") && !el.closest("pre"))
+        ) {
+          highlight = true;
+        }
+        if (el.classList.contains("code-block-container") || el.classList.contains("code-content") || tag === "pre") {
           code = true;
         }
         if (tag === "h1") h1 = true;
@@ -418,7 +436,7 @@ export function NotesEditorModal({
       node = node.parentNode;
     }
 
-    setActiveFormats({ bold, italic, underline, h1, h2, ul, ol, code });
+    setActiveFormats({ bold, italic, underline, highlight, h1, h2, ul, ol, code });
   }, []);
 
   useEffect(() => {
@@ -524,7 +542,7 @@ export function NotesEditorModal({
     }, 2000);
   };
 
-  // Keyboard shortcuts (Escape, Ctrl+Enter)
+  // Keyboard shortcuts (Escape, Ctrl+Enter, Ctrl+H for highlight)
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -534,6 +552,9 @@ export function NotesEditorModal({
       } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
         handleSaveAndClose();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "h" || e.key === "H")) {
+        e.preventDefault();
+        toggleHighlight();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -647,6 +668,109 @@ export function NotesEditorModal({
     }
   };
 
+  // Toggle inline Prime AI highlight on selection or enable typing inside highlight
+  const toggleHighlight = () => {
+    if (typeof document === "undefined" || !editorRef.current) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+
+    if (!editorRef.current.contains(range.commonAncestorContainer)) return;
+
+    // Check if cursor or selection is already inside an inline highlight element
+    let existingHighlight: HTMLElement | null = null;
+    let curr: Node | null = range.commonAncestorContainer;
+    while (curr && curr !== editorRef.current) {
+      if (curr.nodeType === Node.ELEMENT_NODE) {
+        const el = curr as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        if (
+          el.classList.contains("prime-highlight") ||
+          tag === "mark" ||
+          (tag === "code" && !el.closest(".code-block-container") && !el.closest("pre"))
+        ) {
+          existingHighlight = el;
+          break;
+        }
+      }
+      curr = curr.parentNode;
+    }
+
+    // CASE 1: Cursor or selection is ALREADY inside a highlight -> UNAPPLY or EXIT
+    if (existingHighlight) {
+      if (range.collapsed) {
+        // Collapsed cursor inside highlight:
+        const cleanText = (existingHighlight.textContent || "").replace(/\u200B/g, "");
+        if (!cleanText.trim()) {
+          // If empty (only zero-width space), delete the placeholder
+          existingHighlight.remove();
+          handleInput();
+          checkActiveFormats();
+          return;
+        }
+
+        // Jump cursor out directly after the highlight element to resume typing normal text
+        const newRange = document.createRange();
+        newRange.setStartAfter(existingHighlight);
+        newRange.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+        checkActiveFormats();
+        return;
+      } else {
+        // Text is selected inside existing highlight -> unwrap to remove highlight
+        const parent = existingHighlight.parentNode;
+        if (parent) {
+          while (existingHighlight.firstChild) {
+            parent.insertBefore(existingHighlight.firstChild, existingHighlight);
+          }
+          existingHighlight.remove();
+          handleInput();
+          checkActiveFormats();
+          return;
+        }
+      }
+    }
+
+    // CASE 2: NOT inside a highlight -> APPLY
+    const highlightClasses =
+      "prime-highlight px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 font-mono text-[12px] font-semibold tracking-tight inline-block align-baseline";
+
+    if (range.collapsed) {
+      // No text selected: insert an empty prime-highlight badge with \u200B and position cursor inside
+      const highlightEl = document.createElement("code");
+      highlightEl.className = highlightClasses;
+      const textNode = document.createTextNode("\u200B");
+      highlightEl.appendChild(textNode);
+      range.insertNode(highlightEl);
+
+      const newRange = document.createRange();
+      newRange.setStart(textNode, 1);
+      newRange.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(newRange);
+      handleInput();
+      checkActiveFormats();
+      return;
+    } else {
+      // Text is selected -> wrap selection in prime-highlight badge
+      const selectedContent = range.extractContents();
+      const highlightEl = document.createElement("code");
+      highlightEl.className = highlightClasses;
+      highlightEl.appendChild(selectedContent);
+      range.insertNode(highlightEl);
+
+      // Keep newly highlighted text selected
+      const newRange = document.createRange();
+      newRange.selectNodeContents(highlightEl);
+      sel.removeAllRanges();
+      sel.addRange(newRange);
+      handleInput();
+      checkActiveFormats();
+      return;
+    }
+  };
+
   // Toggle or exit code block formatting
   const toggleCodeBlock = () => {
     if (typeof document === "undefined" || !editorRef.current) return;
@@ -685,7 +809,7 @@ export function NotesEditorModal({
     }
 
     // CASE 2: User is in normal notes -> Insert a new code block!
-    const blockHtml = createCodeBlockHtml("", "code");
+    const blockHtml = createCodeBlockHtml("", "code", false);
     document.execCommand("insertHTML", false, blockHtml);
     handleInput();
     checkActiveFormats();
@@ -902,6 +1026,14 @@ export function NotesEditorModal({
         : "text-zinc-400 hover:text-white hover:bg-white/10 border border-transparent"
     );
 
+  const getHighlightBtnClass = (isActive: boolean) =>
+    cn(
+      "p-1.5 rounded-lg transition-all cursor-pointer text-xs flex items-center justify-center gap-1",
+      isActive
+        ? "bg-cyan-500/20 text-cyan-200 border border-cyan-500/40 shadow-[0_0_12px_rgba(6,182,212,0.3)]"
+        : "text-zinc-400 hover:text-white hover:bg-white/10 border border-transparent"
+    );
+
   return (
     <div
       className="fixed inset-0 z-[250] flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-150"
@@ -978,6 +1110,19 @@ export function NotesEditorModal({
           </button>
 
           <div className="h-4 w-px bg-white/10 mx-1" />
+
+          {/* Prime AI Highlight Notation / Term Button */}
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              toggleHighlight();
+            }}
+            className={getHighlightBtnClass(activeFormats.highlight)}
+            title="Highlight Notation / Term (Ctrl+H)"
+          >
+            <Highlighter className="w-4 h-4" />
+          </button>
 
           {/* Bold, Italic, Underline */}
           <button

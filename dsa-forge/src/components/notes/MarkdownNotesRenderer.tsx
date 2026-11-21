@@ -20,7 +20,7 @@ function CollapsibleCodeBlock({
   lang?: string;
   isCompact?: boolean;
 }) {
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
 
   const lines = code.split("\n");
@@ -122,13 +122,14 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
 
   // Regex matches:
   // 1. `inline code`
-  // 2. <u>underline</u>
-  // 3. __underline__
-  // 4. **bold**
-  // 5. *italic*
-  // 6. O(...) complexity (non-backtracking)
+  // 2. <mark>highlight</mark>
+  // 3. <u>underline</u>
+  // 4. __underline__
+  // 5. **bold**
+  // 6. *italic*
+  // 7. O(...) complexity (non-backtracking)
   const tokenRegex =
-    /(`[^`]+`|<u>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|\*[^*]+\*|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/g;
+    /(`[^`]+`|<mark>[\s\S]*?<\/mark>|<u>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|\*[^*]+\*|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/g;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -142,13 +143,14 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
     const val = match[0];
     const key = `${match.index}-${val.slice(0, 8)}`;
 
-    if (val.startsWith("`") && val.endsWith("`")) {
+    if ((val.startsWith("`") && val.endsWith("`")) || (val.startsWith("<mark>") && val.endsWith("</mark>"))) {
+      const code = val.startsWith("`") ? val.slice(1, -1) : val.slice(6, -7);
       parts.push(
         <code
           key={key}
-          className="bg-violet-500/15 border border-violet-500/30 text-cyan-300 px-1.5 py-0.5 rounded text-[11px] font-mono tracking-tight"
+          className="bg-cyan-500/15 border border-cyan-500/35 text-cyan-200 shadow-[0_0_8px_rgba(6,182,212,0.15)] px-1.5 py-0.5 rounded-md text-[11px] font-mono font-semibold tracking-tight inline-block align-baseline"
         >
-          {val.slice(1, -1)}
+          {code}
         </code>
       );
     } else if (
@@ -180,9 +182,9 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
       parts.push(
         <span
           key={key}
-          className="inline-flex items-center gap-1 font-mono text-[11px] font-bold px-1.5 py-0.5 mx-0.5 rounded-md border align-baseline bg-violet-500/15 border-violet-500/30 text-violet-200"
+          className="inline-flex items-center gap-1 font-mono text-[11px] font-bold px-1.5 py-0.5 mx-0.5 rounded-md border align-baseline bg-cyan-500/15 border-cyan-500/35 text-cyan-200 shadow-[0_0_8px_rgba(6,182,212,0.15)]"
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-violet-400 shrink-0" />
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shrink-0" />
           <span>{val}</span>
         </span>
       );

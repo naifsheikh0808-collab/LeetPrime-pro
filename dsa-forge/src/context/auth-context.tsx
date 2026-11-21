@@ -18,6 +18,10 @@ import {
   loadProgress,
   saveProgress,
   resetProgress,
+  loadUserNotesFromCloud,
+  migrateGuestNotesToCloud,
+  clearNotesCache,
+  GUEST_NOTES_KEY,
   PROGRESS_UPDATED_EVENT,
   type UserProgress,
 } from "@/lib/db";
@@ -83,6 +87,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             } else {
               deletePlannerProfile(true);
             }
+
+            // Sync user notes from Firestore cloud into 0ms memory cache
+            await loadUserNotesFromCloud(currentUser.uid);
+
+            // Migrate any local guest notes up to Firestore
+            await migrateGuestNotesToCloud(currentUser.uid);
 
             // Sync cloud BYOK keys across devices (laptop <-> phone)
             const cloudByok = data?.byok;
@@ -176,6 +186,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             });
+
+            // Migrate any local guest notes to cloud on first login
+            await migrateGuestNotesToCloud(currentUser.uid);
           }
         } catch (err) {
           console.error("Firestore sync error on login:", err);
@@ -217,6 +230,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     // Clean local user data so guest mode or the next user doesn't inherit it
     resetProgress(true);
+    clearNotesCache();
     deletePlan(true);
     deletePlannerProfile(true);
 
@@ -232,6 +246,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             k === "prime_ai_gemini_key" ||
             k === "prime_ai_groq_key" ||
             k === "dsaforge_progress" ||
+            k === GUEST_NOTES_KEY ||
             k === "leetprime_study_plan" ||
             k === "leetprime_smart_plan_profile")
         ) {

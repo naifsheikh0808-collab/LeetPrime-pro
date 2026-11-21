@@ -2,7 +2,7 @@
 
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { use, useState, Suspense } from "react";
+import { use, useState, useEffect, Suspense } from "react";
 import {
   ExternalLink,
   Building2,
@@ -15,7 +15,13 @@ import {
   Bot,
   Sparkles,
 } from "lucide-react";
-import { getProblemBySlug } from "@/lib/db";
+import {
+  getProblemBySlug,
+  getProblemNotes,
+  saveProblemNotes,
+  NOTES_UPDATED_EVENT,
+  PROGRESS_UPDATED_EVENT,
+} from "@/lib/db";
 import { Badge, DifficultyBadge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useProgressStore } from "@/hooks/use-progress";
@@ -41,9 +47,31 @@ export function QuestionDetailClient({ slug }: { slug: string }) {
 
   const { progress, updateStatus } = useProgressStore();
   const currentStatus = (progress[problem.id]?.status ?? "todo") as ProgressStatus;
-  const [notes, setNotes] = useState(progress[problem.id]?.notes ?? "");
+  const [notes, setNotes] = useState(() => getProblemNotes(problem.id) || progress[problem.id]?.notes || "");
   const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
   const [isAiOpen, setIsAiOpen] = useState(false);
+
+  useEffect(() => {
+    const syncNote = () => {
+      const current = getProblemNotes(problem.id) || progress[problem.id]?.notes || "";
+      setNotes(current);
+    };
+    syncNote();
+
+    const handleNotesEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || detail.problemId === problem.id) {
+        syncNote();
+      }
+    };
+
+    window.addEventListener(NOTES_UPDATED_EVENT, handleNotesEvent);
+    window.addEventListener(PROGRESS_UPDATED_EVENT, syncNote);
+    return () => {
+      window.removeEventListener(NOTES_UPDATED_EVENT, handleNotesEvent);
+      window.removeEventListener(PROGRESS_UPDATED_EVENT, syncNote);
+    };
+  }, [problem.id, progress]);
 
   const solveUrl = problem.canonicalUrl;
 
@@ -425,6 +453,7 @@ export function QuestionDetailClient({ slug }: { slug: string }) {
         initialNotes={notes}
         onSave={(newNotes) => {
           setNotes(newNotes);
+          saveProblemNotes(problem.id, newNotes);
           updateStatus(problem.id, currentStatus, newNotes);
         }}
       />

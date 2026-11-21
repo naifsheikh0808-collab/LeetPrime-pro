@@ -316,14 +316,22 @@ export function MarkdownNotesRenderer({
             return (
               <div
                 key={idx}
-                className="my-2 rounded-xl border border-white/10 bg-[#080914] overflow-hidden shadow-md"
+                className={cn(
+                  "my-2 rounded-xl border border-white/10 bg-[#080914] overflow-hidden shadow-md",
+                  isCompact ? "my-1.5 rounded-lg" : "my-2"
+                )}
               >
                 {block.lang && (
                   <div className="px-3 py-1 bg-white/[0.03] border-b border-white/[0.07] text-[10px] font-mono text-violet-300 uppercase tracking-wider font-bold">
                     {block.lang}
                   </div>
                 )}
-                <pre className="p-3 overflow-x-auto text-[11px] font-mono text-cyan-300/95 leading-relaxed">
+                <pre
+                  className={cn(
+                    "overflow-x-auto font-mono text-cyan-300/95 leading-relaxed scrollbar-thin",
+                    isCompact ? "p-2.5 text-[10px]" : "p-3 text-[11px]"
+                  )}
+                >
                   <code>{block.text}</code>
                 </pre>
               </div>

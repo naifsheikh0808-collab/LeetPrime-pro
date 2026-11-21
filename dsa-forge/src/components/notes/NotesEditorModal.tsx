@@ -133,11 +133,14 @@ function markdownToHtml(md: string): string {
 
   const formatInline = (str: string) => {
     // Preserve <u> and <mark> tags while escaping bare HTML brackets
+    // Also normalize any mixed *<u> or <u>* before markdown parsing
     const safe = str
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
+      .replace(/\*\s*<u>([\s\S]*?)<\/u>\s*\*/gi, "<u><i>$1</i></u>")
+      .replace(/<u>\s*\*([\s\S]*?)\*\s*<\/u>/gi, "<u><i>$1</i></u>")
       .replace(
         /&lt;mark&gt;(.*?)&lt;\/mark&gt;/gi,
         '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">$1</code>'
@@ -202,7 +205,10 @@ function markdownToHtml(md: string): string {
       if (inUl) { result.push("</ul>"); inUl = false; }
       if (inOl) { result.push("</ol>"); inOl = false; }
       result.push(`<h1>${formatInline(trimmed.slice(2))}</h1>`);
-    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+    } else if (
+      (trimmed.startsWith("- ") || trimmed.startsWith("* ")) &&
+      !/^\s*\*+[^*]+\*+\s*$/.test(line)
+    ) {
       if (inOl) { result.push("</ol>"); inOl = false; }
       if (!inUl) { result.push("<ul>"); inUl = true; }
       result.push(`<li>${formatInline(trimmed.slice(2))}</li>`);
@@ -284,17 +290,20 @@ function htmlToMarkdown(html: string): string {
     // Bold
     if (tag === "b" || tag === "strong") {
       const inner = Array.from(el.childNodes).map(serializeInline).join("");
-      return inner.trim() ? `**${inner}**` : "";
+      const trimmed = inner.trim();
+      return trimmed ? `**${trimmed}**` : "";
     }
     // Italic
     if (tag === "i" || tag === "em") {
       const inner = Array.from(el.childNodes).map(serializeInline).join("");
-      return inner.trim() ? `*${inner}*` : "";
+      const trimmed = inner.trim();
+      return trimmed ? `*${trimmed}*` : "";
     }
     // Underline
     if (tag === "u") {
       const inner = Array.from(el.childNodes).map(serializeInline).join("");
-      return inner.trim() ? `<u>${inner}</u>` : "";
+      const trimmed = inner.trim();
+      return trimmed ? `<u>${trimmed}</u>` : "";
     }
     if (tag === "br") {
       return "\n";
@@ -1642,7 +1651,7 @@ export function NotesEditorModal({
 
   const getBtnClass = (isActive: boolean) =>
     cn(
-      "p-1.5 rounded-lg transition-all cursor-pointer text-xs flex items-center justify-center gap-1",
+      "p-1 sm:p-1.5 rounded-lg transition-all cursor-pointer text-xs flex items-center justify-center shrink-0",
       isActive
         ? "bg-violet-600/35 text-violet-200 border border-violet-500/50 shadow-[0_0_12px_rgba(139,92,246,0.3)]"
         : "text-zinc-400 hover:text-white hover:bg-white/10 border border-transparent"
@@ -1650,7 +1659,7 @@ export function NotesEditorModal({
 
   const getHighlightBtnClass = (isActive: boolean) =>
     cn(
-      "p-1.5 rounded-lg transition-all cursor-pointer text-xs flex items-center justify-center gap-1",
+      "p-1 sm:p-1.5 rounded-lg transition-all cursor-pointer text-xs flex items-center justify-center shrink-0",
       isActive
         ? "bg-amber-500/20 text-amber-200 border border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]"
         : "text-zinc-400 hover:text-white hover:bg-white/10 border border-transparent"
@@ -1705,8 +1714,8 @@ export function NotesEditorModal({
         </div>
 
         {/* ── Visual WYSIWYG Formatting Toolbar with Active Glow ── */}
-        <div className="relative px-3 sm:px-4 py-2 border-b border-white/[0.06] bg-white/[0.015] flex items-center justify-between gap-2 overflow-visible z-30">
-          <div className="flex items-center gap-1 shrink-0 overflow-x-auto no-scrollbar py-0.5">
+        <div className="relative px-2.5 sm:px-4 py-1.5 sm:py-2 border-b border-white/[0.06] bg-white/[0.015] flex items-center justify-between gap-1.5 sm:gap-2 overflow-visible z-30">
+          <div className="flex-1 min-w-0 flex items-center gap-0.5 sm:gap-1 overflow-x-auto no-scrollbar scrollbar-none py-0.5">
             {/* Headings */}
             <button
               type="button"
@@ -1717,7 +1726,7 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.h1)}
               title="Large Heading"
             >
-              <Heading1 className="w-4 h-4" />
+              <Heading1 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
 
             <button
@@ -1729,10 +1738,10 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.h2)}
               title="Medium Heading"
             >
-              <Heading2 className="w-4 h-4" />
+              <Heading2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
 
-            <div className="h-4 w-px bg-white/10 mx-1" />
+            <div className="h-3.5 sm:h-4 w-px bg-white/10 mx-0.5 sm:mx-1 shrink-0" />
 
             {/* Prime AI Highlight Notation / Term Button */}
             <button
@@ -1744,7 +1753,7 @@ export function NotesEditorModal({
               className={getHighlightBtnClass(activeFormats.highlight)}
               title="Highlight Notation / Term (Ctrl+H)"
             >
-              <Highlighter className="w-4 h-4" />
+              <Highlighter className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
 
             {/* Bold, Italic, Underline */}
@@ -1757,7 +1766,7 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.bold)}
               title="Bold (Ctrl+B)"
             >
-              <Bold className="w-4 h-4 font-bold" />
+              <Bold className="w-3.5 h-3.5 sm:w-4 sm:h-4 font-bold" />
             </button>
 
             <button
@@ -1769,7 +1778,7 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.italic)}
               title="Italic (Ctrl+I)"
             >
-              <Italic className="w-4 h-4 italic" />
+              <Italic className="w-3.5 h-3.5 sm:w-4 sm:h-4 italic" />
             </button>
 
             <button
@@ -1781,7 +1790,7 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.underline)}
               title="Underline (Ctrl+U)"
             >
-              <Underline className="w-4 h-4 underline" />
+              <Underline className="w-3.5 h-3.5 sm:w-4 sm:h-4 underline" />
             </button>
 
             {/* Code Block Button */}
@@ -1794,10 +1803,10 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.code)}
               title="Code Block"
             >
-              <Code className="w-4 h-4" />
+              <Code className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
 
-            <div className="h-4 w-px bg-white/10 mx-1" />
+            <div className="h-3.5 sm:h-4 w-px bg-white/10 mx-0.5 sm:mx-1 shrink-0" />
 
             {/* Lists */}
             <button
@@ -1809,7 +1818,7 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.ul)}
               title="Bullet List"
             >
-              <List className="w-4 h-4" />
+              <List className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
 
             <button
@@ -1821,7 +1830,7 @@ export function NotesEditorModal({
               className={getBtnClass(activeFormats.ol)}
               title="Numbered List"
             >
-              <ListOrdered className="w-4 h-4" />
+              <ListOrdered className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
           </div>
 
@@ -1830,10 +1839,10 @@ export function NotesEditorModal({
             <button
               type="button"
               onClick={() => setIsExportOpen(!isExportOpen)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium text-zinc-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all cursor-pointer select-none"
+              className="flex items-center gap-1 sm:gap-1.5 px-2 py-1 sm:px-2.5 sm:py-1 rounded-lg text-[11px] sm:text-xs font-medium text-zinc-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 hover:border-white/20 transition-all cursor-pointer select-none shrink-0"
               title="Export or share notes"
             >
-              <Download className="w-3.5 h-3.5 text-amber-400" />
+              <Download className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-400" />
               <span>Export</span>
               <ChevronDown
                 className={cn(

@@ -134,7 +134,14 @@ function normalizeNotesContent(content: string): string {
     .replace(/&nbsp;/g, " ")
     .replace(/\\([*_`~])/g, "$1"); // unescape escaped markdown symbols like \* or \_
 
-  // 2. Strip non-formatting HTML wrapper tags while normalizing paragraphs and breaks
+  // 2. Normalize mixed markdown/HTML italic and underline combinations
+  text = text
+    .replace(/\*\s*<u\b[^>]*>([\s\S]*?)<\/u>\s*\*/gi, "<u><i>$1</i></u>")
+    .replace(/<u\b[^>]*>\s*\*([\s\S]*?)\*\s*<\/u>/gi, "<u><i>$1</i></u>")
+    .replace(/\b_\s*<u\b[^>]*>([\s\S]*?)<\/u>\s*_\b/gi, "<u><i>$1</i></u>")
+    .replace(/<u\b[^>]*>\s*_([\s\S]*?)_\s*<\/u>/gi, "<u><i>$1</i></u>");
+
+  // 3. Strip non-formatting HTML wrapper tags while normalizing paragraphs and breaks
   text = text
     .replace(/<\/?(?:span|font|div)\b[^>]*>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")

@@ -5,7 +5,9 @@ import Link from "next/link";
 import {
   TrendingUp,
   CheckCircle2,
+  Clock,
   RefreshCw,
+  ArrowRight,
   BarChart3,
   ChevronDown,
   ChevronUp,
@@ -25,6 +27,7 @@ import {
   resetProgress,
   getPatternMastery,
   getSolvedProblems,
+  getProblemsByStatus,
   TOP_PROBLEMS,
   PATTERNS,
 } from "@/lib/db";
@@ -33,7 +36,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/context/auth-context";
 import { useProgressStore } from "@/hooks/use-progress";
 import { ActiveRoadmapCard } from "@/components/progress/ActiveRoadmapCard";
-import type { Difficulty, Problem } from "@/lib/types";
+import type { Difficulty, Problem, ProgressStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /* ─── Custom Social Brand Icons ──────────────────────────────── */
@@ -57,25 +60,41 @@ function GitHubIcon({ className }: { className?: string }) {
   );
 }
 
+type PanelStatus = "solved" | "attempted" | "revise";
+
+function formatRelativeActivity(iso?: string): string | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const diffMin = Math.floor((Date.now() - ms) / 60000);
+  if (diffMin < 1) return "Just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.floor(diffHr / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
 export default function ProgressPage() {
   const [showPatternBreakdown, setShowPatternBreakdown] = useState<boolean>(false);
   const [showDevModal, setShowDevModal] = useState<boolean>(false);
   const [showFirebaseGuide, setShowFirebaseGuide] = useState<boolean>(false);
-  const [solvedPanel, setSolvedPanel] = useState<Difficulty | "ALL" | null>(null);
+  const [panelStatus, setPanelStatus] = useState<PanelStatus | null>(null);
   const [panelDifficulty, setPanelDifficulty] = useState<Difficulty | "ALL">("ALL");
 
   const { user, isConfigured, signInWithGoogle, logout } = useAuth();
   const { progress, refresh } = useProgressStore();
 
-  // Close the solved-problems panel with Escape.
+  // Close the progress-problems modal with Escape.
   useEffect(() => {
-    if (solvedPanel === null) return;
+    if (panelStatus === null) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSolvedPanel(null);
+      if (e.key === "Escape") setPanelStatus(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [solvedPanel]);
+  }, [panelStatus]);
 
   const handleReset = () => {
     if (confirm("Are you sure you want to reset your practice progress? This will reset all solved marks in this browser.")) {
@@ -84,8 +103,10 @@ export default function ProgressPage() {
     }
   };
 
-  // Solved problems, derived from the canonical progress store.
+  // Solved & weak-area lists, sorted newest first.
   const solvedProblems = getSolvedProblems(progress);
+  const attemptedProblems = getProblemsByStatus(progress, "attempted");
+  const reviseProblems = getProblemsByStatus(progress, "revise");
   const solvedCount = solvedProblems.length;
 
   const solvedByDifficulty = (difficulty: Difficulty) =>
@@ -115,17 +136,27 @@ export default function ProgressPage() {
   const patternsInProgress = patternMasteryStats.filter((p) => p.solved > 0).length;
   const patternsMastered = patternMasteryStats.filter((p) => p.pct >= 50).length;
 
-  const openSolvedPanel = (difficulty: Difficulty | "ALL") => {
+  const openProblemsPanel = (status: PanelStatus, difficulty: Difficulty | "ALL" = "ALL") => {
+    setPanelStatus(status);
     setPanelDifficulty(difficulty);
-    setSolvedPanel(difficulty);
   };
 
-  const panelProblems: Problem[] =
-    solvedPanel === null
-      ? []
-      : panelDifficulty === "ALL"
+  const activeStatusProblems: Problem[] =
+    panelStatus === "attempted"
+      ? attemptedProblems
+      : panelStatus === "revise"
+      ? reviseProblems
+      : panelStatus === "solved"
       ? solvedProblems
-      : solvedProblems.filter((p) => p.difficulty === panelDifficulty);
+      : [];
+
+  const panelProblems: Problem[] =
+    panelDifficulty === "ALL"
+      ? activeStatusProblems
+      : activeStatusProblems.filter((p) => p.difficulty === panelDifficulty);
+
+  const activeByDifficulty = (difficulty: Difficulty) =>
+    activeStatusProblems.filter((p) => p.difficulty === difficulty).length;
 
   const statCards = [
     {
@@ -341,58 +372,129 @@ NEXT_PUBLIC_FIREBASE_APP_ID=1:123456789:web:...`}
       {/* ── Connected Study Roadmap Card ───────────────────── */}
       <ActiveRoadmapCard />
 
-      {/* ── Summary Problem Metrics (clickable, 2 cards in a row on mobile like homepage) ─────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
-        {statCards.map((card) => {
-          const pct = card.total > 0 ? (card.value / card.total) * 100 : 0;
-          const isActive = solvedPanel === card.key;
-          return (
-            <button
-              key={card.key}
-              type="button"
-              id={`stat-card-${card.key.toLowerCase()}`}
-              onClick={() => openSolvedPanel(card.key)}
-              aria-expanded={isActive}
-              className={cn(
-                "text-left p-3.5 sm:p-5 bg-[#10131f]/70 border rounded-xl sm:rounded-2xl backdrop-blur-md transition-all duration-200 group hover:-translate-y-0.5 cursor-pointer relative",
-                isActive
-                  ? "border-violet-500/60 bg-violet-500/[0.06] shadow-[0_8px_28px_-6px_rgba(124,58,237,0.35)]"
-                  : "border-white/10 hover:border-violet-500/40"
-              )}
-            >
-              <div className="flex items-start justify-between gap-1 mb-1 sm:mb-1.5">
-                <div className={cn("text-[10px] sm:text-[11px] font-bold uppercase tracking-wider truncate", card.text)}>
-                  {card.label}
+      {/* ── Summary Problem Metrics + Slim Focus Queue Strip ─────────────── */}
+      <div className="space-y-2.5 sm:space-y-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+          {statCards.map((card) => {
+            const pct = card.total > 0 ? (card.value / card.total) * 100 : 0;
+            const isActive = panelStatus === "solved" && panelDifficulty === card.key;
+            return (
+              <button
+                key={card.key}
+                type="button"
+                id={`stat-card-${card.key.toLowerCase()}`}
+                onClick={() => openProblemsPanel("solved", card.key)}
+                aria-expanded={isActive}
+                className={cn(
+                  "text-left p-3.5 sm:p-5 bg-[#10131f]/70 border rounded-xl sm:rounded-2xl backdrop-blur-md transition-all duration-200 group hover:-translate-y-0.5 cursor-pointer relative",
+                  isActive
+                    ? "border-violet-500/60 bg-violet-500/[0.06] shadow-[0_8px_28px_-6px_rgba(124,58,237,0.35)]"
+                    : "border-white/10 hover:border-violet-500/40"
+                )}
+              >
+                <div className="flex items-start justify-between gap-1 mb-1 sm:mb-1.5">
+                  <div className={cn("text-[10px] sm:text-[11px] font-bold uppercase tracking-wider truncate", card.text)}>
+                    {card.label}
+                  </div>
+                  <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/[0.06] text-slate-400 border border-white/10 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    View
+                  </span>
                 </div>
-                <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/[0.06] text-slate-400 border border-white/10 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                  View
-                </span>
-              </div>
 
-              <div className="flex items-baseline gap-1 mt-0.5">
-                <span className="text-xl sm:text-3xl font-extrabold text-white tracking-tight">
-                  {card.value}
-                </span>
-                <span className="text-[11px] sm:text-sm font-normal text-slate-500 font-mono">
-                  / {card.total}
-                </span>
-              </div>
+                <div className="flex items-baseline gap-1 mt-0.5">
+                  <span className="text-xl sm:text-3xl font-extrabold text-white tracking-tight">
+                    {card.value}
+                  </span>
+                  <span className="text-[11px] sm:text-sm font-normal text-slate-500 font-mono">
+                    / {card.total}
+                  </span>
+                </div>
 
-              <div className="w-full bg-slate-800/90 h-1 sm:h-1.5 rounded-full mt-2 sm:mt-3 overflow-hidden">
-                <div
-                  className={cn("bg-gradient-to-r h-full rounded-full transition-all duration-500", card.accent)}
-                  style={{ width: `${Math.min(100, pct)}%` }}
-                />
-              </div>
+                <div className="w-full bg-slate-800/90 h-1 sm:h-1.5 rounded-full mt-2 sm:mt-3 overflow-hidden">
+                  <div
+                    className={cn("bg-gradient-to-r h-full rounded-full transition-all duration-500", card.accent)}
+                    style={{ width: `${Math.min(100, pct)}%` }}
+                  />
+                </div>
 
-              <div className="text-[10px] sm:text-[11px] text-slate-400 mt-1.5 sm:mt-2 truncate leading-tight">
-                {card.key === "ALL"
-                  ? `${Math.round(pct)}% curated benchmark`
-                  : card.note}
+                <div className="text-[10px] sm:text-[11px] text-slate-400 mt-1.5 sm:mt-2 truncate leading-tight">
+                  {card.key === "ALL"
+                    ? `${Math.round(pct)}% curated benchmark`
+                    : card.note}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Slim Weak-Area Focus Strip: Attempted & Need Revision */}
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-4">
+          <button
+            type="button"
+            id="stat-card-attempted"
+            onClick={() => openProblemsPanel("attempted", "ALL")}
+            aria-expanded={panelStatus === "attempted"}
+            className={cn(
+              "flex items-center justify-between gap-2 px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl sm:rounded-2xl bg-[#10131f]/70 border backdrop-blur-md transition-all duration-200 text-left group cursor-pointer hover:-translate-y-0.5",
+              panelStatus === "attempted"
+                ? "border-amber-500/60 bg-amber-500/[0.06] shadow-[0_6px_22px_-6px_rgba(245,158,11,0.3)]"
+                : "border-white/10 hover:border-amber-500/40"
+            )}
+          >
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-amber-500/15 border border-amber-500/25 flex items-center justify-center text-amber-400 shrink-0">
+                <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               </div>
-            </button>
-          );
-        })}
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-sm sm:text-lg font-extrabold text-white leading-none">
+                    {attemptedProblems.length}
+                  </span>
+                  <span className="text-[11px] sm:text-xs font-bold text-amber-400 truncate">
+                    Attempted
+                  </span>
+                </div>
+                <p className="hidden sm:block text-[11px] text-slate-400 truncate mt-0.5">
+                  In progress · Click to revisit
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-amber-400 group-hover:translate-x-0.5 transition-all shrink-0" />
+          </button>
+
+          <button
+            type="button"
+            id="stat-card-revise"
+            onClick={() => openProblemsPanel("revise", "ALL")}
+            aria-expanded={panelStatus === "revise"}
+            className={cn(
+              "flex items-center justify-between gap-2 px-3 py-2.5 sm:px-4 sm:py-3 rounded-xl sm:rounded-2xl bg-[#10131f]/70 border backdrop-blur-md transition-all duration-200 text-left group cursor-pointer hover:-translate-y-0.5",
+              panelStatus === "revise"
+                ? "border-sky-500/60 bg-sky-500/[0.06] shadow-[0_6px_22px_-6px_rgba(56,189,248,0.3)]"
+                : "border-white/10 hover:border-sky-500/40"
+            )}
+          >
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-sky-500/15 border border-sky-500/25 flex items-center justify-center text-sky-400 shrink-0">
+                <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-sm sm:text-lg font-extrabold text-white leading-none">
+                    {reviseProblems.length}
+                  </span>
+                  <span className="text-[11px] sm:text-xs font-bold text-sky-400 truncate">
+                    Need Revision
+                  </span>
+                </div>
+                <p className="hidden sm:block text-[11px] text-slate-400 truncate mt-0.5">
+                  Weak areas · Click to review
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="w-3.5 h-3.5 text-slate-500 group-hover:text-sky-400 group-hover:translate-x-0.5 transition-all shrink-0" />
+          </button>
+        </div>
       </div>
 
       {/* ── COLLAPSIBLE Pattern Mastery Breakdown (Hidden by default) ── */}
@@ -470,105 +572,193 @@ NEXT_PUBLIC_FIREBASE_APP_ID=1:123456789:web:...`}
         )}
       </div>
 
-      {/* ── SOLVED PROBLEMS PANEL ─────────────────────────────── */}
-      {solvedPanel !== null && (
+      {/* ── UNIFIED PROGRESS PROBLEMS MODAL (Solved / Attempted / Need Revision) ────────────────── */}
+      {panelStatus !== null && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
-          onClick={() => setSolvedPanel(null)}
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={() => setPanelStatus(null)}
         >
           <div
-            className="relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-3xl bg-[#10131f] border border-violet-500/30 shadow-2xl overflow-hidden"
+            className="relative w-full max-w-3xl max-h-[88vh] sm:max-h-[85vh] flex flex-col rounded-t-3xl sm:rounded-3xl bg-[#10131f] border border-violet-500/30 shadow-2xl overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
-            <div className="flex items-start justify-between gap-4 p-5 sm:p-6 border-b border-white/10">
-              <div>
-                <div className="flex items-center gap-2 text-violet-400 text-xs font-bold uppercase tracking-wider mb-1">
-                  <CheckCircle2 className="w-4 h-4" /> Solved Problems
+            <div className="flex items-start justify-between gap-4 p-4 sm:p-6 pb-3 sm:pb-4 border-b border-white/10">
+              <div className="min-w-0">
+                <div
+                  className={cn(
+                    "flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider mb-1",
+                    panelStatus === "attempted"
+                      ? "text-amber-400"
+                      : panelStatus === "revise"
+                      ? "text-sky-400"
+                      : "text-emerald-400"
+                  )}
+                >
+                  {panelStatus === "attempted" ? (
+                    <Clock className="w-3.5 h-3.5" />
+                  ) : panelStatus === "revise" ? (
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  ) : (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {panelStatus === "attempted"
+                      ? "Attempted Queue"
+                      : panelStatus === "revise"
+                      ? "Revision Queue"
+                      : "Solved History"}
+                  </span>
                 </div>
-                <h2 className="text-xl font-extrabold text-white">
-                  {solvedPanel === "ALL"
+                <h2 className="text-lg sm:text-xl font-extrabold text-white truncate">
+                  {panelStatus === "attempted"
+                    ? "Attempted Questions"
+                    : panelStatus === "revise"
+                    ? "Need Revision Questions"
+                    : panelDifficulty === "ALL"
                     ? "All Solved Questions"
-                    : `${solvedPanel} Questions Solved`}
+                    : `${panelDifficulty} Questions Solved`}
                 </h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  {panelProblems.length} question
-                  {panelProblems.length === 1 ? "" : "s"} shown
-                  {panelDifficulty !== "ALL" && ` · filtered by ${panelDifficulty}`}
+                <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5">
+                  {panelProblems.length} question{panelProblems.length === 1 ? "" : "s"} ·{" "}
+                  {panelStatus === "solved" ? "Newest solved first" : "Most recent first"}
+                  {panelDifficulty !== "ALL" && ` · ${panelDifficulty}`}
                 </p>
               </div>
               <button
-                onClick={() => setSolvedPanel(null)}
-                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors shrink-0"
+                onClick={() => setPanelStatus(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors shrink-0 cursor-pointer"
                 aria-label="Close"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Difficulty filter */}
-            <div className="px-5 sm:px-6 py-3 border-b border-white/10 flex items-center gap-2 flex-wrap bg-white/[0.02]">
-              {(["ALL", "Easy", "Medium", "Hard"] as const).map((d) => {
-                const active = panelDifficulty === d;
-                return (
-                  <button
-                    key={d}
-                    onClick={() => setPanelDifficulty(d)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
-                      active
-                        ? "bg-violet-500/20 text-violet-300 border-violet-500/40"
-                        : "bg-white/[0.03] text-slate-400 hover:bg-white/[0.07] hover:text-slate-200 border-white/[0.06]"
-                    }`}
-                  >
-                    {d === "ALL" ? "All Difficulty" : d}
-                    <span className="ml-1.5 font-mono text-[10px] opacity-70">
-                      {d === "ALL"
-                        ? solvedCount
-                        : solvedByDifficulty(d)}
-                    </span>
-                  </button>
-                );
-              })}
+            {/* Unified Status Switcher + Difficulty Filter */}
+            <div className="px-4 sm:px-6 py-2.5 border-b border-white/10 bg-white/[0.02] space-y-2">
+              {/* Status Switcher Row */}
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                {(
+                  [
+                    { key: "solved" as const, label: "Solved", count: solvedCount, activeCls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40" },
+                    { key: "attempted" as const, label: "Attempted", count: attemptedProblems.length, activeCls: "bg-amber-500/15 text-amber-300 border-amber-500/40" },
+                    { key: "revise" as const, label: "Need Revision", count: reviseProblems.length, activeCls: "bg-sky-500/15 text-sky-300 border-sky-500/40" },
+                  ]
+                ).map((tab) => {
+                  const active = panelStatus === tab.key;
+                  return (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => setPanelStatus(tab.key)}
+                      className={cn(
+                        "px-2.5 py-1 rounded-lg text-xs font-semibold transition-all border shrink-0 cursor-pointer",
+                        active
+                          ? tab.activeCls
+                          : "bg-white/[0.03] text-slate-400 hover:bg-white/[0.07] hover:text-slate-200 border-white/[0.06]"
+                      )}
+                    >
+                      {tab.label}
+                      <span className="ml-1.5 font-mono text-[10px] opacity-75">{tab.count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Difficulty Filter Row */}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {(["ALL", "Easy", "Medium", "Hard"] as const).map((d) => {
+                    const active = panelDifficulty === d;
+                    return (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => setPanelDifficulty(d)}
+                        className={cn(
+                          "px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all border cursor-pointer",
+                          active
+                            ? "bg-violet-500/20 text-violet-300 border-violet-500/40"
+                            : "bg-white/[0.03] text-slate-400 hover:bg-white/[0.07] hover:text-slate-200 border-white/[0.06]"
+                        )}
+                      >
+                        {d === "ALL" ? "All" : d}
+                        <span className="ml-1 font-mono text-[10px] opacity-70">
+                          {d === "ALL" ? activeStatusProblems.length : activeByDifficulty(d)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <Link
+                  href={`/dsa/questions?status=${panelStatus}`}
+                  onClick={() => setPanelStatus(null)}
+                  className="hidden sm:inline-flex items-center gap-1 text-[11px] font-semibold text-violet-400 hover:text-violet-300 transition-colors"
+                >
+                  Open in Explorer <ArrowRight className="w-3 h-3" />
+                </Link>
+              </div>
             </div>
 
             {/* List */}
-            <div className="overflow-y-auto p-3 sm:p-4 space-y-1.5">
+            <div className="overflow-y-auto p-3 sm:p-4 space-y-1.5 flex-1">
               {panelProblems.length === 0 ? (
-                <div className="py-14 text-center text-slate-500 text-sm">
-                  No solved questions in this bucket yet.
+                <div className="py-12 text-center text-slate-500 text-sm">
+                  No {panelStatus === "revise" ? "need revision" : panelStatus} questions in this view yet.
                   <br />
                   <span className="text-xs text-slate-600">
-                    Mark a question as solved and it will show up here.
+                    Update a question&apos;s status on its detail page and it will appear here.
                   </span>
                 </div>
               ) : (
-                panelProblems.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center gap-3 px-3.5 py-3 rounded-xl bg-white/[0.03] border border-white/5 hover:border-violet-500/30 transition-colors group"
-                  >
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    <Link
-                      href={`/dsa/questions/${p.slug}`}
-                      className="text-sm font-semibold text-white hover:text-violet-300 transition-colors truncate min-w-0 flex-1"
+                panelProblems.map((p) => {
+                  const prog = progress[p.id];
+                  const timestamp =
+                    panelStatus === "solved"
+                      ? prog?.solvedAt || prog?.lastAttemptedAt
+                      : prog?.lastAttemptedAt || prog?.solvedAt;
+                  const relTime = formatRelativeActivity(timestamp);
+
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-2.5 sm:gap-3 px-3 sm:px-3.5 py-2.5 sm:py-3 rounded-xl bg-white/[0.03] border border-white/5 hover:border-violet-500/30 transition-colors group"
                     >
-                      {p.title}
-                    </Link>
-                    <span className="hidden sm:block text-[11px] text-slate-400 bg-white/[0.04] px-2 py-0.5 rounded border border-white/5 truncate max-w-[180px]">
-                      {p.primaryPattern || "Uncategorized"}
-                    </span>
-                    <DifficultyBadge difficulty={p.difficulty} />
-                    <a
-                      href={p.canonicalUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-1 text-slate-500 hover:text-white transition-colors shrink-0"
-                      title="Open on LeetCode"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                ))
+                      {panelStatus === "attempted" ? (
+                        <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+                      ) : panelStatus === "revise" ? (
+                        <RefreshCw className="w-4 h-4 text-sky-400 shrink-0" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                      )}
+                      <Link
+                        href={`/dsa/questions/${p.slug}`}
+                        className="text-xs sm:text-sm font-semibold text-white hover:text-violet-300 transition-colors truncate min-w-0 flex-1"
+                      >
+                        {p.title}
+                      </Link>
+                      {relTime && (
+                        <span className="hidden md:inline text-[10px] font-mono text-slate-500 shrink-0">
+                          {relTime}
+                        </span>
+                      )}
+                      <span className="hidden sm:block text-[11px] text-slate-400 bg-white/[0.04] px-2 py-0.5 rounded border border-white/5 truncate max-w-[160px]">
+                        {p.primaryPattern || "Uncategorized"}
+                      </span>
+                      <DifficultyBadge difficulty={p.difficulty} />
+                      <a
+                        href={p.canonicalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="p-1 text-slate-500 hover:text-white transition-colors shrink-0"
+                        title="Open on LeetCode"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>

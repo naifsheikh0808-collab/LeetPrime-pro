@@ -12,7 +12,7 @@ import {
   CalendarDays,
   CalendarRange,
 } from "lucide-react";
-import { getAllPatterns, TOP_PROBLEMS } from "@/lib/db";
+import { getAllPatterns, isSolvedStatus, TOP_PROBLEMS } from "@/lib/db";
 import {
   getExtraDatasetPatterns,
   getPatternByNameOrSlug,
@@ -21,7 +21,7 @@ import {
 import { DifficultyBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useProgressStore } from "@/hooks/use-progress";
-import type { Difficulty, Timeframe } from "@/lib/types";
+import type { Difficulty, ProgressStatus, Timeframe } from "@/lib/types";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 type TimeframeId = "30d" | "3m" | "6m" | "8-12m" | "ALL";
@@ -137,11 +137,17 @@ function RecencyBadge({ timeframes }: { timeframes: string[] }) {
 function QuestionsPageContent() {
   const searchParams = useSearchParams();
   const patternParam = searchParams.get("pattern");
+  const statusParam = searchParams.get("status");
 
   const [selectedTimeframe, setSelectedTimeframe] = useState<TimeframeId>("ALL");
   const [search, setSearch] = useState("");
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty[]>([]);
   const [selectedPattern, setSelectedPattern] = useState("");
+  const [selectedStatus, setSelectedStatus] = useState<"ALL" | ProgressStatus>(
+    statusParam === "solved" || statusParam === "attempted" || statusParam === "revise" || statusParam === "todo"
+      ? statusParam
+      : "ALL"
+  );
   const [sortBy, setSortBy] = useState<
     "priority" | "difficulty" | "title" | "recency" | "pedagogical"
   >(patternParam ? "pedagogical" : "priority");
@@ -150,7 +156,7 @@ function QuestionsPageContent() {
   const extraPatterns = getExtraDatasetPatterns();
   const { progress } = useProgressStore();
 
-  // Initialize and synchronize selected pattern from URL search param if present
+  // Initialize and synchronize selected pattern / status from URL search params if present
   useEffect(() => {
     if (patternParam) {
       const decoded = decodeURIComponent(patternParam).trim();
@@ -168,6 +174,17 @@ function QuestionsPageContent() {
     }
   }, [patternParam, patterns]);
 
+  useEffect(() => {
+    if (
+      statusParam === "solved" ||
+      statusParam === "attempted" ||
+      statusParam === "revise" ||
+      statusParam === "todo"
+    ) {
+      setSelectedStatus(statusParam);
+    }
+  }, [statusParam]);
+
   function cardCount(tfId: TimeframeId) {
     return TOP_PROBLEMS.filter((p) => matchesTimeframe(p, tfId)).length;
   }
@@ -180,7 +197,14 @@ function QuestionsPageContent() {
       selectedDifficulty.length === 0 || selectedDifficulty.includes(p.difficulty);
     const matchesPattern =
       !selectedPattern || matchesPatternValue(p, selectedPattern);
-    return matchesTf && matchesSearch && matchesDiff && matchesPattern;
+    const currentStatus = progress[p.id]?.status ?? "todo";
+    const matchesStatus =
+      selectedStatus === "ALL"
+        ? true
+        : selectedStatus === "solved"
+        ? isSolvedStatus(currentStatus)
+        : currentStatus === selectedStatus;
+    return matchesTf && matchesSearch && matchesDiff && matchesPattern && matchesStatus;
   });
 
   /* sort */
@@ -366,12 +390,27 @@ function QuestionsPageContent() {
             })}
           </div>
 
+          {/* Status Filter Dropdown */}
+          <select
+            id="status-select"
+            value={selectedStatus}
+            onChange={(e) => setSelectedStatus(e.target.value as "ALL" | ProgressStatus)}
+            aria-label="Filter by status"
+            className="bg-[#0c0e17] border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-violet-500/50 flex-1 sm:flex-initial min-w-[120px]"
+          >
+            <option value="ALL">All Status</option>
+            <option value="attempted">Attempted</option>
+            <option value="revise">Need Revision</option>
+            <option value="solved">Solved</option>
+            <option value="todo">To Do</option>
+          </select>
+
           {/* Pattern Dropdown */}
           <select
             id="pattern-select"
             value={selectedPattern}
             onChange={(e) => setSelectedPattern(e.target.value)}
-            className="bg-[#0c0e17] border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-violet-500/50"
+            className="bg-[#0c0e17] border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-violet-500/50 flex-1 sm:flex-initial min-w-[130px]"
           >
             <option value="">All Patterns</option>
             <optgroup label="Tier 1: Core Foundations (15)">
@@ -435,8 +474,12 @@ function QuestionsPageContent() {
               </span>
             )}
           </span>
-          <span className="hidden sm:block text-[11px] text-slate-600">
-            {problems.filter((p) => progress[p.id]?.status === "solved").length} solved
+          <span className="hidden sm:block text-[11px] text-slate-500">
+            {problems.filter((p) => isSolvedStatus(progress[p.id]?.status)).length} solved
+            {" · "}
+            {problems.filter((p) => progress[p.id]?.status === "attempted").length} attempted
+            {" · "}
+            {problems.filter((p) => progress[p.id]?.status === "revise").length} revise
           </span>
         </div>
 

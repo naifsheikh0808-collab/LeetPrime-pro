@@ -19,7 +19,7 @@ import {
 
 export { PATTERNS, TOP_COMPANIES, TOP_PROBLEMS, PLATFORM_STATS, TIMEFRAME_LABELS };
 export { getPatternProblems, matchesPatternValue, resolveProblemId, resolveProblemPattern };
-export type { UserProgress, Pattern, Company, Problem, Timeframe, Difficulty };
+export type { UserProgress, Pattern, Company, Problem, Timeframe, Difficulty, ProgressStatus };
 
 // ─── Patterns ─────────────────────────────────────────────────────────────────
 
@@ -658,7 +658,9 @@ export function updateProblemStatus(
 
   const resolvedSolvedAt =
     status === "solved"
-      ? existing?.solvedAt ?? new Date().toISOString()
+      ? isSolvedStatus(existing?.status)
+        ? existing?.solvedAt ?? new Date().toISOString()
+        : new Date().toISOString()
       : existing?.solvedAt;
   if (resolvedSolvedAt !== undefined && resolvedSolvedAt !== null) {
     updated.solvedAt = resolvedSolvedAt;
@@ -683,13 +685,47 @@ export function getProgressStats(progress: Record<string, UserProgress>) {
   };
 }
 
-/* ─── Solved problem helpers ──────────────────────────────────────────────── */
+/* ─── Solved & status-filtered problem helpers ───────────────────────────────── */
 
-/** Every problem the user has marked solved, in dataset order. */
+function parseTimestampMs(iso?: string): number {
+  if (!iso) return 0;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/** Every problem the user has marked solved, sorted newest solved first. */
 export function getSolvedProblems(
   progress: Record<string, UserProgress>
 ): Problem[] {
-  return TOP_PROBLEMS.filter((p) => isSolvedStatus(progress[p.id]?.status));
+  const solved = TOP_PROBLEMS.filter((p) => isSolvedStatus(progress[p.id]?.status));
+  return solved.sort((a, b) => {
+    const pa = progress[a.id];
+    const pb = progress[b.id];
+    const ta = parseTimestampMs(pa?.solvedAt || pa?.lastAttemptedAt);
+    const tb = parseTimestampMs(pb?.solvedAt || pb?.lastAttemptedAt);
+    return tb - ta;
+  });
+}
+
+/** Problems matching a specific status ("solved" | "attempted" | "revise" | "todo"), most recent first. */
+export function getProblemsByStatus(
+  progress: Record<string, UserProgress>,
+  status: ProgressStatus
+): Problem[] {
+  if (status === "solved") {
+    return getSolvedProblems(progress);
+  }
+  const filtered = TOP_PROBLEMS.filter(
+    (p) => (progress[p.id]?.status ?? "todo") === status
+  );
+  if (status === "todo") return filtered;
+  return filtered.sort((a, b) => {
+    const pa = progress[a.id];
+    const pb = progress[b.id];
+    const ta = parseTimestampMs(pa?.lastAttemptedAt || pa?.solvedAt);
+    const tb = parseTimestampMs(pb?.lastAttemptedAt || pb?.solvedAt);
+    return tb - ta;
+  });
 }
 
 /** Solved problems for one difficulty ("Easy" | "Medium" | "Hard"). */

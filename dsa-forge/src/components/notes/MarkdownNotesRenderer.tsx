@@ -141,7 +141,7 @@ function CollapsibleCodeBlock({
  */
 function normalizeNotesContent(content: string): string {
   if (!content) return "";
-  let text = content;
+  let text = content.replace(/\u200B/g, "");
 
   // 1. Unescape HTML entities that may have been saved as entities or escaped
   text = text
@@ -159,11 +159,18 @@ function normalizeNotesContent(content: string): string {
   text = text
     .replace(/\*\s*<u\b[^>]*>([\s\S]*?)<\/u>\s*\*/gi, "<u><i>$1</i></u>")
     .replace(/<u\b[^>]*>\s*\*([\s\S]*?)\*\s*<\/u>/gi, "<u><i>$1</i></u>")
-    .replace(/\b_\s*<u\b[^>]*>([\s\S]*?)<\/u>\s*_\b/gi, "<u><i>$1</i></u>")
+    .replace(/(?<!\w)_\s*<u\b[^>]*>([\s\S]*?)<\/u>\s*_(?!\w)/gi, "<u><i>$1</i></u>")
     .replace(/<u\b[^>]*>\s*_([\s\S]*?)_\s*<\/u>/gi, "<u><i>$1</i></u>");
 
-  // 3. Strip non-formatting HTML wrapper tags while normalizing paragraphs and breaks
+  // 3. Strip empty formatting tags and non-formatting HTML wrapper tags
   text = text
+    .replace(/<u\b[^>]*>([\s\S]*?)<\/u>/gi, (_m, inner: string) =>
+      inner
+        .split(/\r?\n/)
+        .map((l) => (l.trim() ? `<u>${l.trim()}</u>` : ""))
+        .join("\n")
+    )
+    .replace(/<(?:u|b|strong|i|em)\b[^>]*>\s*<\/(?:u|b|strong|i|em)>/gi, "")
     .replace(/<\/?(?:span|font|div)\b[^>]*>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/?p\b[^>]*>/gi, "\n");
@@ -187,12 +194,12 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
   // 1. `inline code`
   // 2. <mark>highlight</mark> or <code class="...">highlight</code>
   // 3. <u>underline</u> (case-insensitive)
-  // 4. __underline__
+  // 4. __underline__ (only real words, never pure underscores like ____ or |____|)
   // 5. **bold** or <b>bold</b> or <strong>bold</strong>
-  // 6. *italic* or _italic_ or <i>italic</i> or <em>italic</em>
+  // 6. *italic* or _italic_ (only real words) or <i>italic</i> or <em>italic</em>
   // 7. O(...) complexity (non-backtracking)
   const tokenRegex =
-    /(`[^`]+`|<mark\b[^>]*>[\s\S]*?<\/mark>|<code\b[^>]*>[\s\S]*?<\/code>|<u\b[^>]*>[\s\S]*?<\/u>|__[^_]+__|\*\*[^*]+\*\*|<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>|\*[^*\r\n]+?\*|(?<!\w)_[^_\r\n]+?_(?!\w)|<(?:i|em)\b[^>]*>[\s\S]*?<\/(?:i|em)>|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/gi;
+    /(`[^`]+`|<mark\b[^>]*>[\s\S]*?<\/mark>|<code\b[^>]*>[\s\S]*?<\/code>|<u\b[^>]*>[\s\S]*?<\/u>|(?<!_)__(?!_)(?!\s)[^_\r\n]*[a-zA-Z0-9][^_\r\n]*(?<!\s)__(?!_)|\*\*[^*\r\n]+\*\*|<(?:b|strong)\b[^>]*>[\s\S]*?<\/(?:b|strong)>|\*[^*\r\n]+?\*|(?<!\w)_(?!\s)[^_\r\n]*[a-zA-Z0-9][^_\r\n]*(?<!\s)_(?!\w)|<(?:i|em)\b[^>]*>[\s\S]*?<\/(?:i|em)>|\bO\([^()\n\r]+(?:\([^()\n\r]+\)[^()\n\r]*)?\))/gi;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -294,10 +301,11 @@ function renderInlineTokens(text: string, depth = 0): React.ReactNode {
   }
 
   if (lastIndex < text.length) {
-    parts.push(text.substring(lastIndex));
+    parts.push(text.substring(lastIndex).replace(/<\/?u\b[^>]*>/gi, ""));
   }
 
-  return parts;
+  // Also strip any stray unmatched <u> or </u> inside plain text segments
+  return parts.map((p) => (typeof p === "string" ? p.replace(/<\/?u\b[^>]*>/gi, "") : p));
 }
 
 interface Block {
@@ -405,7 +413,7 @@ function parseBlocks(markdown: string): Block[] {
       i++;
     }
     if (paraLines.length > 0) {
-      blocks.push({ type: "p", text: paraLines.join(" ") });
+      blocks.push({ type: "p", text: paraLines.join("\n") });
     }
 
     // Absolute failsafe: guarantee forward progress on any malformed input
@@ -437,8 +445,8 @@ export function MarkdownNotesRenderer({
   return (
     <div
       className={cn(
-        "space-y-2.5 text-zinc-200 leading-relaxed font-sans select-text",
-        isCompact ? "text-xs space-y-1 sm:space-y-1.5" : "text-xs sm:text-sm",
+        "space-y-1 text-zinc-200 leading-snug font-sans select-text",
+        isCompact ? "text-xs space-y-0.5" : "text-xs sm:text-sm",
         className
       )}
     >
@@ -449,8 +457,8 @@ export function MarkdownNotesRenderer({
               <h1
                 key={idx}
                 className={cn(
-                  "font-bold text-white border-b border-white/10 pb-1 tracking-tight",
-                  isCompact ? "text-xs sm:text-sm mt-0.5 mb-0.5 pb-0.5" : "text-base sm:text-lg mt-3 mb-1.5"
+                  "font-bold text-white border-b border-white/10 pb-0.5 tracking-tight",
+                  isCompact ? "text-xs sm:text-sm mt-0.5 mb-0.5" : "text-base sm:text-lg mt-2 mb-1"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -463,7 +471,7 @@ export function MarkdownNotesRenderer({
                 key={idx}
                 className={cn(
                   "font-bold text-violet-300 tracking-tight",
-                  isCompact ? "text-xs mt-0.5 mb-0.5" : "text-sm sm:text-base mt-2.5 mb-1"
+                  isCompact ? "text-xs mt-0.5 mb-0.5" : "text-sm sm:text-base mt-1.5 mb-0.5"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -476,7 +484,7 @@ export function MarkdownNotesRenderer({
                 key={idx}
                 className={cn(
                   "font-semibold text-cyan-300 tracking-tight",
-                  isCompact ? "text-[11px] mt-0.5 mb-0.5" : "text-xs sm:text-sm mt-2 mb-0.5"
+                  isCompact ? "text-[11px] mt-0.5 mb-0.5" : "text-xs sm:text-sm mt-1 mb-0.5"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -488,8 +496,8 @@ export function MarkdownNotesRenderer({
               <blockquote
                 key={idx}
                 className={cn(
-                  "border-l-2 border-violet-500/70 bg-violet-950/20 pl-3 pr-2 py-1 my-1.5 rounded-r-lg text-zinc-300 text-xs italic",
-                  isCompact && "py-0.5 my-1 text-[11px]"
+                  "border-l-2 border-violet-500/70 bg-violet-950/20 pl-3 pr-2 py-0.5 my-1 rounded-r-lg text-zinc-300 text-xs italic",
+                  isCompact && "py-0.5 my-0.5 text-[11px]"
                 )}
               >
                 {renderInlineTokens(block.text || "")}
@@ -498,11 +506,11 @@ export function MarkdownNotesRenderer({
 
           case "ul":
             return (
-              <ul key={idx} className={cn("space-y-1 my-1 pl-1", isCompact && "space-y-0.5 my-0.5")}>
+              <ul key={idx} className={cn("space-y-0.5 my-0.5 pl-1", isCompact && "space-y-0 my-0.5")}>
                 {block.items?.map((item, i) => (
-                  <li key={i} className="flex items-start gap-1.5 sm:gap-2 text-zinc-200 text-xs leading-relaxed">
+                  <li key={i} className="flex items-start gap-1.5 sm:gap-2 text-zinc-200 text-xs leading-snug">
                     <span className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-1.5 shrink-0 shadow-sm shadow-violet-500/40" />
-                    <span className="flex-1 min-w-0">{renderInlineTokens(item)}</span>
+                    <span className="flex-1 min-w-0 whitespace-pre-wrap">{renderInlineTokens(item)}</span>
                   </li>
                 ))}
               </ul>
@@ -510,13 +518,13 @@ export function MarkdownNotesRenderer({
 
           case "ol":
             return (
-              <ol key={idx} className={cn("space-y-1 my-1 pl-1 counter-reset-item", isCompact && "space-y-0.5 my-0.5")}>
+              <ol key={idx} className={cn("space-y-0.5 my-0.5 pl-1 counter-reset-item", isCompact && "space-y-0 my-0.5")}>
                 {block.items?.map((item, i) => (
-                  <li key={i} className="flex items-start gap-1 sm:gap-2 text-zinc-200 text-xs leading-relaxed">
+                  <li key={i} className="flex items-start gap-1 sm:gap-2 text-zinc-200 text-xs leading-snug">
                     <span className="font-mono text-[10px] font-bold text-violet-400/90 shrink-0 mt-0.5 w-3.5 sm:w-4 text-right">
                       {i + 1}.
                     </span>
-                    <span className="flex-1 min-w-0">{renderInlineTokens(item)}</span>
+                    <span className="flex-1 min-w-0 whitespace-pre-wrap">{renderInlineTokens(item)}</span>
                   </li>
                 ))}
               </ol>
@@ -535,7 +543,7 @@ export function MarkdownNotesRenderer({
           case "p":
           default:
             return (
-              <p key={idx} className="text-zinc-200/95 leading-relaxed">
+              <p key={idx} className="text-zinc-200/95 leading-snug whitespace-pre-wrap">
                 {renderInlineTokens(block.text || "")}
               </p>
             );

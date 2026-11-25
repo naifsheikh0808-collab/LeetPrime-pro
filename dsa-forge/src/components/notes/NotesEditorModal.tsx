@@ -61,29 +61,179 @@ function highlightCodeHtml(code: string, lang = "cpp"): string {
 }
 
 /**
- * Extracts raw multiline text from a code DOM element without losing newlines.
+ * Extracts raw multiline text from a code DOM element (recursively) without losing newlines.
  */
-function extractCodeText(codeEl: HTMLElement): string {
-  let text = "";
-  for (const node of Array.from(codeEl.childNodes)) {
+function extractCodeText(codeEl: Node): string {
+  function walk(node: Node, isRoot = false): string {
     if (node.nodeType === Node.TEXT_NODE) {
-      text += node.textContent || "";
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      const el = node as HTMLElement;
-      const tag = el.tagName.toLowerCase();
-      if (tag === "br") {
-        text += "\n";
-      } else if (tag === "div" || tag === "p") {
-        text += "\n" + (el.textContent || "");
+      return (node.textContent || "").replace(/\u200B/g, "");
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
+      return "";
+    }
+    const tag = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement).tagName.toLowerCase() : "";
+    if (tag === "br") {
+      return "\n";
+    }
+
+    const children = Array.from(node.childNodes);
+    let out = "";
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const childTag = child.nodeType === Node.ELEMENT_NODE ? (child as HTMLElement).tagName.toLowerCase() : "";
+
+      if (childTag === "div" || childTag === "p") {
+        // Check if it's an empty block containing only a placeholder <br>
+        const childText = (child.textContent || "").replace(/\u200B/g, "");
+        const hasOnlyBr = !childText && child.childNodes.length === 1 && (child.firstChild as HTMLElement)?.tagName?.toLowerCase() === "br";
+        if (out.length > 0 && !out.endsWith("\n")) {
+          out += "\n";
+        }
+        if (hasOnlyBr) {
+          out += "\n";
+        } else {
+          out += walk(child, false);
+        }
+      } else if (childTag === "br") {
+        // Ignore a single trailing sentinel <br> when the entire <pre> is otherwise empty
+        if (isRoot && children.length === 1 && out === "") {
+          continue;
+        }
+        out += "\n";
       } else {
-        text += el.textContent || "";
+        out += walk(child, false);
       }
     }
+    return out;
   }
-  if (!text) {
-    text = codeEl.textContent || "";
+
+  return walk(codeEl, true).replace(/\r\n|\r|\u2028|\u2029/g, "\n");
+}
+
+/**
+ * Places a collapsed caret at a specific character offset inside a code <pre> element.
+ */
+function setCodeCaretOffset(codeEl: HTMLElement, targetOffset: number): void {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const walker = document.createTreeWalker(codeEl, NodeFilter.SHOW_TEXT);
+  let remaining = Math.max(0, targetOffset);
+  let node = walker.nextNode() as Text | null;
+  let lastTextNode: Text | null = null;
+
+  while (node) {
+    lastTextNode = node;
+    const len = node.data.length;
+    if (remaining <= len) {
+      const r = document.createRange();
+      r.setStart(node, remaining);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+      return;
+    }
+    remaining -= len;
+    node = walker.nextNode() as Text | null;
   }
-  return text.replace(/\r\n/g, "\n");
+
+  const r = document.createRange();
+  if (lastTextNode) {
+    r.setStart(lastTextNode, lastTextNode.data.length);
+  } else {
+    r.selectNodeContents(codeEl);
+  }
+  r.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+interface HistorySnapshot {
+  html: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+function getDomOffset(root: Node, targetNode: Node, targetOffset: number): number {
+  let pos = 0;
+  let found = false;
+
+  function walk(node: Node): void {
+    if (found) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const len = (node.textContent || "").length;
+      if (node === targetNode) {
+        pos += Math.min(targetOffset, len);
+        found = true;
+        return;
+      }
+      pos += len;
+      return;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as HTMLElement;
+      const children = el.childNodes;
+      pos += 1;
+      for (let i = 0; i < children.length; i++) {
+        if (node === targetNode && i === targetOffset) {
+          found = true;
+          return;
+        }
+        walk(children[i]);
+        if (found) return;
+      }
+      if (node === targetNode && targetOffset >= children.length) {
+        found = true;
+        return;
+      }
+      pos += 1;
+    }
+  }
+
+  walk(root);
+  return pos;
+}
+
+function resolveDomOffset(root: Node, targetPos: number): { node: Node; offset: number } | null {
+  let pos = 0;
+  let result: { node: Node; offset: number } | null = null;
+
+  function walk(node: Node): void {
+    if (result) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const len = (node.textContent || "").length;
+      if (targetPos >= pos && targetPos <= pos + len) {
+        result = { node, offset: targetPos - pos };
+        return;
+      }
+      pos += len;
+      return;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as HTMLElement;
+      const children = el.childNodes;
+      pos += 1;
+      for (let i = 0; i < children.length; i++) {
+        if (pos === targetPos) {
+          if (children[i].nodeType === Node.TEXT_NODE) {
+            result = { node: children[i], offset: 0 };
+          } else {
+            result = { node: el, offset: i };
+          }
+          return;
+        }
+        walk(children[i]);
+        if (result) return;
+      }
+      if (pos === targetPos) {
+        result = { node: el, offset: children.length };
+        return;
+      }
+      pos += 1;
+    }
+  }
+
+  walk(root);
+  return result;
 }
 
 /**
@@ -113,7 +263,7 @@ function createCodeBlockHtml(code: string, lang = "code", isCollapsed = true): s
           `<button type="button" class="code-delete-btn p-1 rounded hover:bg-red-500/20 text-zinc-400 hover:text-red-400 transition-colors cursor-pointer flex items-center justify-center" data-action="delete-code" title="Delete code block"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg></button>` +
         `</div>` +
       `</div>` +
-      `<pre class="code-content p-3 text-xs font-mono text-slate-100 leading-relaxed overflow-x-auto whitespace-pre outline-none select-text${hiddenCls}" contenteditable="true" spellcheck="false">${highlightedCode}</pre>` +
+      `<pre class="code-content p-3 min-h-[3.25rem] text-xs font-mono text-slate-100 leading-relaxed overflow-x-auto whitespace-pre outline-none select-text${hiddenCls}" contenteditable="true" spellcheck="false">${highlightedCode}</pre>` +
     `</div><p><br></p>`
   );
 }
@@ -124,7 +274,7 @@ function createCodeBlockHtml(code: string, lang = "code", isCollapsed = true): s
  */
 function markdownToHtml(md: string): string {
   if (!md || !md.trim()) return "<p><br></p>";
-  const trimmedMd = md.trim();
+  const trimmedMd = md.replace(/^(?:\r?\n)+|\s+$/g, "");
 
   // If already legacy HTML format without markdown fences, return directly (cleansed of legacy atomic blocks)
   if (/^<(p|div|h1|h2|ul|ol|pre)\b/i.test(trimmedMd) && !trimmedMd.includes("```")) {
@@ -132,29 +282,43 @@ function markdownToHtml(md: string): string {
   }
 
   const formatInline = (str: string) => {
-    // Preserve <u> and <mark> tags while escaping bare HTML brackets
-    // Also normalize any mixed *<u> or <u>* before markdown parsing
-    const safe = str
+    const cleanInput = str.replace(/\u200B/g, "");
+    // Protect inline code/highlight backtick spans first so underscores/asterisks inside them aren't mangled
+    const codeTokens: string[] = [];
+    const withCodePlaceholders = cleanInput.replace(/`([^`]+)`/g, (_m, inner) => {
+      const idx = codeTokens.length;
+      codeTokens.push(
+        `<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">${inner
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")}</code>`
+      );
+      return `\uE000CODE${idx}\uE001`;
+    });
+
+    // Preserve valid <u> and <mark> tags while escaping bare HTML brackets
+    // Also strip empty <u></u> and normalize mixed *<u> or <u>*
+    const safe = withCodePlaceholders
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/&lt;u&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
+      .replace(/&lt;u\b[^&]*&gt;\s*&lt;\/u&gt;/gi, "")
+      .replace(/&lt;u\b[^&]*&gt;(.*?)&lt;\/u&gt;/gi, "<u>$1</u>")
+      .replace(/&lt;\/?u\b[^&]*&gt;/gi, "")
       .replace(/\*\s*<u>([\s\S]*?)<\/u>\s*\*/gi, "<u><i>$1</i></u>")
       .replace(/<u>\s*\*([\s\S]*?)\*\s*<\/u>/gi, "<u><i>$1</i></u>")
       .replace(
-        /&lt;mark&gt;(.*?)&lt;\/mark&gt;/gi,
+        /&lt;mark\b[^&]*&gt;(.*?)&lt;\/mark&gt;/gi,
         '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">$1</code>'
       );
 
     return safe
       .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
-      .replace(/__(.+?)__/g, "<u>$1</u>")
+      // Only treat __text__ as underline if it contains real word chars and isn't a diagram run like ____ or __|__
+      .replace(/(?<!_)__(?!_)(?!\s)([^_\r\n]*[a-zA-Z0-9][^_\r\n]*)(?<!\s)__(?!_)/g, "<u>$1</u>")
       .replace(/\*([^*]+?)\*/g, "<i>$1</i>")
-      .replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "<i>$1</i>")
-      .replace(
-        /`([^`]+)`/g,
-        '<code class="prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5">$1</code>'
-      );
+      .replace(/(?<!\w)_(?!\s)([^_\r\n]*[a-zA-Z0-9][^_\r\n]*)(?<!\s)_(?!\w)/g, "<i>$1</i>")
+      .replace(/\uE000CODE(\d+)\uE001/g, (_m, idxStr) => codeTokens[Number(idxStr)] || "");
   };
 
   const lines = trimmedMd.split(/\r?\n/);
@@ -274,7 +438,7 @@ function htmlToMarkdown(html: string): string {
 
   function serializeInline(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
-      return node.textContent || "";
+      return (node.textContent || "").replace(/\u200B/g, "").replace(/\u00A0/g, " ");
     }
     if (node.nodeType !== Node.ELEMENT_NODE) {
       return "";
@@ -282,28 +446,37 @@ function htmlToMarkdown(html: string): string {
     const el = node as HTMLElement;
     const tag = el.tagName.toLowerCase();
 
+    const wrapPerLine = (raw: string, open: string, close: string) => {
+      const cleaned = raw.replace(/\u200B/g, "");
+      if (!cleaned.trim()) return "";
+      if (!cleaned.includes("\n")) {
+        return `${open}${cleaned.trim()}${close}`;
+      }
+      return cleaned
+        .split("\n")
+        .map((line) => (line.trim() ? `${open}${line.trim()}${close}` : ""))
+        .join("\n");
+    };
+
     // Inline code or Prime AI highlight
     if (tag === "code" || tag === "mark") {
-      const inner = (el.textContent || "").replace(/\u200B/g, "").trim();
+      const inner = (el.textContent || "").replace(/\u200B/g, "").replace(/\u00A0/g, " ").trim();
       return inner ? `\`${inner.replace(/`/g, "")}\`` : "";
     }
     // Bold
     if (tag === "b" || tag === "strong") {
       const inner = Array.from(el.childNodes).map(serializeInline).join("");
-      const trimmed = inner.trim();
-      return trimmed ? `**${trimmed}**` : "";
+      return wrapPerLine(inner, "**", "**");
     }
     // Italic
     if (tag === "i" || tag === "em") {
       const inner = Array.from(el.childNodes).map(serializeInline).join("");
-      const trimmed = inner.trim();
-      return trimmed ? `*${trimmed}*` : "";
+      return wrapPerLine(inner, "*", "*");
     }
     // Underline
     if (tag === "u") {
       const inner = Array.from(el.childNodes).map(serializeInline).join("");
-      const trimmed = inner.trim();
-      return trimmed ? `<u>${trimmed}</u>` : "";
+      return wrapPerLine(inner, "<u>", "</u>");
     }
     if (tag === "br") {
       return "\n";
@@ -419,7 +592,7 @@ function htmlToMarkdown(html: string): string {
     .map((l) => l.trimEnd())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/^(?:\r?\n)+|\s+$/g, "");
 }
 
 /**
@@ -436,11 +609,11 @@ function markdownToPlainText(md: string): string {
     })
     // Headings
     .replace(/^#{1,6}\s+(.*)$/gm, "$1")
-    // Bold, Underline, Italic
+    // Bold, Underline, Italic (preserve diagram underscores like ____)
     .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/__(.+?)__/g, "$1")
+    .replace(/(?<!_)__(?!_)(?!\s)([^_\r\n]*[a-zA-Z0-9][^_\r\n]*)(?<!\s)__(?!_)/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/(?<!\w)_([^_]+)_(?!\w)/g, "$1")
+    .replace(/(?<!\w)_(?!\s)([^_\r\n]*[a-zA-Z0-9][^_\r\n]*)(?<!\s)_(?!\w)/g, "$1")
     .replace(/<u>(.*?)<\/u>/gi, "$1")
     // Inline code / highlight badges
     .replace(/`([^`]+)`/g, "$1")
@@ -465,6 +638,11 @@ export function NotesEditorModal({
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const wasOpenRef = useRef(false);
   const lastSavedMdRef = useRef(initialNotes);
+  const historyRef = useRef<HistorySnapshot[]>([]);
+  const historyIndexRef = useRef(-1);
+  const historyDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const isRestoringHistoryRef = useRef(false);
+  const toggleHighlightRef = useRef<() => void>(() => {});
 
   const [isExportOpen, setIsExportOpen] = useState(false);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
@@ -558,6 +736,42 @@ export function NotesEditorModal({
     return () => document.removeEventListener("selectionchange", onSelectionChange);
   }, [isOpen, checkActiveFormats]);
 
+  const captureSnapshot = useCallback((): HistorySnapshot | null => {
+    if (!editorRef.current) return null;
+    const html = editorRef.current.innerHTML;
+    let startOffset = 0;
+    let endOffset = 0;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      if (editorRef.current.contains(range.commonAncestorContainer)) {
+        startOffset = getDomOffset(editorRef.current, range.startContainer, range.startOffset);
+        endOffset = getDomOffset(editorRef.current, range.endContainer, range.endOffset);
+      }
+    }
+    return { html, startOffset, endOffset };
+  }, []);
+
+  const pushHistorySnapshot = useCallback(
+    (force = false) => {
+      if (isRestoringHistoryRef.current) return;
+      const snap = captureSnapshot();
+      if (!snap) return;
+      const current = historyRef.current[historyIndexRef.current];
+      if (!force && current && current.html === snap.html) {
+        return;
+      }
+      const nextStack = historyRef.current.slice(0, historyIndexRef.current + 1);
+      nextStack.push(snap);
+      if (nextStack.length > 100) {
+        nextStack.shift();
+      }
+      historyRef.current = nextStack;
+      historyIndexRef.current = nextStack.length - 1;
+    },
+    [captureSnapshot]
+  );
+
   // Initialize editor content ONLY once when modal transitions from closed to open
   useEffect(() => {
     if (isOpen && !wasOpenRef.current) {
@@ -566,6 +780,10 @@ export function NotesEditorModal({
       if (editorRef.current) {
         const html = markdownToHtml(initialNotes || "");
         editorRef.current.innerHTML = html;
+
+        // Seed undo/redo history stack with initial snapshot
+        historyRef.current = [{ html, startOffset: 0, endOffset: 0 }];
+        historyIndexRef.current = 0;
 
         // Initialize word count directly on DOM
         if (wordCountRef.current) {
@@ -589,6 +807,9 @@ export function NotesEditorModal({
       }
     } else if (!isOpen) {
       wasOpenRef.current = false;
+      if (historyDebounceRef.current) {
+        clearTimeout(historyDebounceRef.current);
+      }
     }
   }, [isOpen, initialNotes, checkActiveFormats]);
 
@@ -596,6 +817,9 @@ export function NotesEditorModal({
   const handleSaveAndClose = useCallback(() => {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
+    }
+    if (historyDebounceRef.current) {
+      clearTimeout(historyDebounceRef.current);
     }
     try {
       if (editorRef.current) {
@@ -610,8 +834,99 @@ export function NotesEditorModal({
     }
   }, [onSave, onClose]);
 
+  const scheduleAutoSaveAndCounts = useCallback(() => {
+    if (wordCountRef.current && editorRef.current) {
+      const text = editorRef.current.innerText || "";
+      const trimmed = text.trim();
+      const count = trimmed ? trimmed.split(/\s+/).length : 0;
+      wordCountRef.current.textContent = `${count} words`;
+    }
+
+    if (saveStatusRef.current) {
+      saveStatusRef.current.textContent = "Saving...";
+      saveStatusRef.current.className = "text-[11px] font-medium text-amber-400/90 hidden sm:inline";
+    }
+
+    checkActiveFormats();
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      try {
+        if (editorRef.current) {
+          const md = htmlToMarkdown(editorRef.current.innerHTML);
+          if (md !== lastSavedMdRef.current) {
+            lastSavedMdRef.current = md;
+            onSave(md);
+          }
+        }
+      } catch (err) {
+        console.error("[NotesEditorModal] Auto-save error:", err);
+      } finally {
+        if (saveStatusRef.current) {
+          saveStatusRef.current.textContent = "Saved";
+          saveStatusRef.current.className = "text-[11px] font-medium text-emerald-400/90 hidden sm:inline";
+        }
+      }
+    }, 2000);
+  }, [checkActiveFormats, onSave]);
+
+  const restoreHistorySnapshot = useCallback(
+    (snap: HistorySnapshot) => {
+      if (!editorRef.current) return;
+      isRestoringHistoryRef.current = true;
+      try {
+        editorRef.current.innerHTML = snap.html;
+        const start = resolveDomOffset(editorRef.current, snap.startOffset);
+        const end = resolveDomOffset(editorRef.current, snap.endOffset);
+        const sel = window.getSelection();
+        if (sel && start && end) {
+          const r = document.createRange();
+          r.setStart(start.node, start.offset);
+          r.setEnd(end.node, end.offset);
+          sel.removeAllRanges();
+          sel.addRange(r);
+        }
+        scheduleAutoSaveAndCounts();
+      } finally {
+        isRestoringHistoryRef.current = false;
+      }
+    },
+    [scheduleAutoSaveAndCounts]
+  );
+
+  const undoHistory = useCallback(() => {
+    if (!editorRef.current) return;
+    if (historyDebounceRef.current) {
+      clearTimeout(historyDebounceRef.current);
+      historyDebounceRef.current = null;
+    }
+    // Flush any pending typed text since the last snapshot before stepping back
+    const currentHtml = editorRef.current.innerHTML;
+    const activeSnap = historyRef.current[historyIndexRef.current];
+    if (activeSnap && activeSnap.html !== currentHtml) {
+      pushHistorySnapshot(true);
+    }
+    if (historyIndexRef.current > 0) {
+      historyIndexRef.current -= 1;
+      restoreHistorySnapshot(historyRef.current[historyIndexRef.current]);
+    }
+  }, [pushHistorySnapshot, restoreHistorySnapshot]);
+
+  const redoHistory = useCallback(() => {
+    if (historyDebounceRef.current) {
+      clearTimeout(historyDebounceRef.current);
+      historyDebounceRef.current = null;
+    }
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      historyIndexRef.current += 1;
+      restoreHistorySnapshot(historyRef.current[historyIndexRef.current]);
+    }
+  }, [restoreHistorySnapshot]);
+
   // Handle typing & content change without triggering ANY React re-renders (zero thread blocking)
-  const handleInput = () => {
+  const handleInput = (skipHistoryDebounce = false) => {
     // 0. Clean up any zero-width space in any text node that has real text
     if (editorRef.current) {
       const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT);
@@ -643,72 +958,58 @@ export function NotesEditorModal({
       }
     }
 
-    // 1. Direct DOM update for word count (0ms, 0 React renders)
-    if (wordCountRef.current && editorRef.current) {
-      const text = editorRef.current.innerText || "";
-      const trimmed = text.trim();
-      const count = trimmed ? trimmed.split(/\s+/).length : 0;
-      wordCountRef.current.textContent = `${count} words`;
-    }
+    scheduleAutoSaveAndCounts();
 
-    // 2. Direct DOM update for status indicator (0ms, 0 React renders)
-    if (saveStatusRef.current) {
-      saveStatusRef.current.textContent = "Saving...";
-      saveStatusRef.current.className = "text-[11px] font-medium text-amber-400/90 hidden sm:inline";
-    }
-
-    checkActiveFormats();
-
-    // 3. Debounced quiet background sync
-    if (saveTimeoutRef.current) {
-      clearTimeout(saveTimeoutRef.current);
-    }
-    saveTimeoutRef.current = setTimeout(() => {
-      try {
-        if (editorRef.current) {
-          const md = htmlToMarkdown(editorRef.current.innerHTML);
-          if (md !== lastSavedMdRef.current) {
-            lastSavedMdRef.current = md;
-            onSave(md);
-          }
-        }
-      } catch (err) {
-        console.error("[NotesEditorModal] Auto-save error:", err);
-      } finally {
-        if (saveStatusRef.current) {
-          saveStatusRef.current.textContent = "Saved";
-          saveStatusRef.current.className = "text-[11px] font-medium text-emerald-400/90 hidden sm:inline";
-        }
+    if (!skipHistoryDebounce && !isRestoringHistoryRef.current) {
+      if (historyDebounceRef.current) {
+        clearTimeout(historyDebounceRef.current);
       }
-    }, 2000);
+      historyDebounceRef.current = setTimeout(() => {
+        pushHistorySnapshot();
+        historyDebounceRef.current = null;
+      }, 300);
+    }
   };
 
-  // Keyboard shortcuts (Escape, Ctrl+Enter, Ctrl+H for highlight)
+  // Keyboard shortcuts (Escape, Ctrl+Enter, Ctrl+H for highlight, Ctrl+Z/Y for undo/redo)
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
+      const isMod = e.ctrlKey || e.metaKey;
       if (e.key === "Escape") {
         e.preventDefault();
         handleSaveAndClose();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      } else if (isMod && e.key === "Enter") {
         e.preventDefault();
         handleSaveAndClose();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === "h" || e.key === "H")) {
+      } else if (isMod && (e.key === "h" || e.key === "H")) {
         e.preventDefault();
-        toggleHighlight();
+        toggleHighlightRef.current();
+      } else if (isMod && !e.altKey && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redoHistory();
+        } else {
+          undoHistory();
+        }
+      } else if (isMod && !e.altKey && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        redoHistory();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, handleSaveAndClose]);
+  }, [isOpen, handleSaveAndClose, undoHistory, redoHistory]);
 
   if (!isOpen) return null;
 
   // Execute formatting command on text selection
   const execCmd = (command: string, value: string | undefined = undefined) => {
     if (typeof document !== "undefined") {
+      pushHistorySnapshot();
       document.execCommand(command, false, value);
-      handleInput();
+      handleInput(true);
+      pushHistorySnapshot(true);
       checkActiveFormats();
       if (editorRef.current) {
         editorRef.current.focus();
@@ -719,6 +1020,7 @@ export function NotesEditorModal({
   // Toggle heading level or revert to normal paragraph if already active
   const toggleHeading = (tag: "H1" | "H2") => {
     if (typeof document === "undefined") return;
+    pushHistorySnapshot();
     try {
       const currentBlock = (document.queryCommandValue("formatBlock") || "").toUpperCase();
       if (currentBlock === tag) {
@@ -729,7 +1031,8 @@ export function NotesEditorModal({
     } catch {
       document.execCommand("formatBlock", false, `<${tag.toLowerCase()}>`);
     }
-    handleInput();
+    handleInput(true);
+    pushHistorySnapshot(true);
     checkActiveFormats();
     if (editorRef.current) {
       editorRef.current.focus();
@@ -818,37 +1121,49 @@ export function NotesEditorModal({
 
     if (!editorRef.current.contains(range.commonAncestorContainer)) return;
 
-    // Check if cursor or selection is already inside an inline highlight element
+    const isHighlightNode = (el: HTMLElement) =>
+      el.classList.contains("prime-highlight") ||
+      el.tagName.toLowerCase() === "mark" ||
+      (el.tagName.toLowerCase() === "code" && !el.closest(".code-block-container") && !el.closest("pre"));
+
+    // Record pre-mutation state for Ctrl+Z undo support
+    pushHistorySnapshot();
+
+    // Check if cursor or selection is already inside a single inline highlight element
     let existingHighlight: HTMLElement | null = null;
     let curr: Node | null = range.commonAncestorContainer;
     while (curr && curr !== editorRef.current) {
-      if (curr.nodeType === Node.ELEMENT_NODE) {
-        const el = curr as HTMLElement;
-        const tag = el.tagName.toLowerCase();
-        if (
-          el.classList.contains("prime-highlight") ||
-          tag === "mark" ||
-          (tag === "code" && !el.closest(".code-block-container") && !el.closest("pre"))
-        ) {
-          existingHighlight = el;
-          break;
-        }
+      if (curr.nodeType === Node.ELEMENT_NODE && isHighlightNode(curr as HTMLElement)) {
+        existingHighlight = curr as HTMLElement;
+        break;
       }
       curr = curr.parentNode;
     }
 
-    // CASE 1: Cursor or selection is ALREADY inside a highlight -> UNAPPLY or EXIT
     const highlightClasses =
       "prime-highlight bg-amber-400/25 border border-amber-400/50 text-amber-200 shadow-[0_0_10px_rgba(245,158,11,0.2)] font-mono text-[12px] font-semibold px-1.5 py-0.5 rounded-md mx-0.5";
 
+    const cleanupEmptyHighlights = () => {
+      if (!editorRef.current) return;
+      editorRef.current.querySelectorAll(".prime-highlight, mark, code").forEach((el) => {
+        const htmlEl = el as HTMLElement;
+        if (!htmlEl.closest(".code-block-container") && !htmlEl.closest("pre")) {
+          const clean = (htmlEl.textContent || "").replace(/\u200B/g, "");
+          if (clean.length === 0 && htmlEl !== existingHighlight) {
+            htmlEl.remove();
+          }
+        }
+      });
+    };
+
+    // CASE 1: Cursor or selection is ALREADY wholly inside a single highlight -> UNAPPLY or EXIT
     if (existingHighlight) {
       if (range.collapsed) {
-        // Collapsed cursor inside highlight:
         const cleanText = (existingHighlight.textContent || "").replace(/\u200B/g, "");
         if (!cleanText.trim()) {
-          // If empty (only zero-width space), delete the placeholder
           existingHighlight.remove();
-          handleInput();
+          handleInput(true);
+          pushHistorySnapshot(true);
           checkActiveFormats();
           return;
         }
@@ -872,19 +1187,28 @@ export function NotesEditorModal({
         checkActiveFormats();
         return;
       } else {
-        // Text is selected inside existing highlight -> unhighlight ONLY the selected sub-text!
         const totalText = (existingHighlight.textContent || "").replace(/\u200B/g, "");
         const selectedText = range.toString().replace(/\u200B/g, "");
 
-        // If the entire text was selected, unwrap the whole element
+        // If the entire text was selected (even with trailing/leading space inside highlight), unwrap the whole element
         if (selectedText.trim() === totalText.trim() || selectedText.length >= totalText.length) {
           const parent = existingHighlight.parentNode;
           if (parent) {
+            const firstChild = existingHighlight.firstChild;
+            const lastChild = existingHighlight.lastChild;
             while (existingHighlight.firstChild) {
               parent.insertBefore(existingHighlight.firstChild, existingHighlight);
             }
             existingHighlight.remove();
-            handleInput();
+            if (firstChild && lastChild) {
+              const newRange = document.createRange();
+              newRange.setStartBefore(firstChild);
+              newRange.setEndAfter(lastChild);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+            }
+            handleInput(true);
+            pushHistorySnapshot(true);
             checkActiveFormats();
             return;
           }
@@ -905,7 +1229,6 @@ export function NotesEditorModal({
         if (parent) {
           const frag = document.createDocumentFragment();
 
-          // 1. Portion before selected sub-text (remains highlighted)
           if (beforeText.length > 0) {
             const beforeEl = document.createElement("code");
             beforeEl.className = highlightClasses;
@@ -913,11 +1236,9 @@ export function NotesEditorModal({
             frag.appendChild(beforeEl);
           }
 
-          // 2. The selected sub-text (unhighlighted plain text)
           const unhighlightedNode = document.createTextNode(selectedText);
           frag.appendChild(unhighlightedNode);
 
-          // 3. Portion after selected sub-text (remains highlighted)
           if (afterText.length > 0) {
             const afterEl = document.createElement("code");
             afterEl.className = highlightClasses;
@@ -927,22 +1248,88 @@ export function NotesEditorModal({
 
           parent.replaceChild(frag, existingHighlight);
 
-          // Keep the unhighlighted sub-text selected for fluid UX
           const newRange = document.createRange();
           newRange.selectNodeContents(unhighlightedNode);
           sel.removeAllRanges();
           sel.addRange(newRange);
 
-          handleInput();
+          handleInput(true);
+          pushHistorySnapshot(true);
           checkActiveFormats();
           return;
         }
       }
     }
 
+    // CASE 1B: Non-collapsed selection spanning highlight(s) + extra spaces around them (e.g. " [text] ")
+    // If all non-whitespace text in the selection is ALREADY highlighted, UNHIGHLIGHT instead of re-highlighting!
+    if (!range.collapsed) {
+      const cloned = range.cloneContents();
+      const clonedHighlights = Array.from(cloned.querySelectorAll(".prime-highlight, mark, code")).filter(
+        (el) => (el.textContent || "").replace(/\u200B/g, "").length > 0
+      );
+
+      if (clonedHighlights.length > 0) {
+        let hasPlainNonWhitespace = false;
+        const walker = document.createTreeWalker(cloned, NodeFilter.SHOW_TEXT);
+        let tNode = walker.nextNode() as Text | null;
+        while (tNode) {
+          let p: Node | null = tNode.parentNode;
+          let insideHl = false;
+          while (p && p !== cloned) {
+            if (p.nodeType === Node.ELEMENT_NODE && isHighlightNode(p as HTMLElement)) {
+              insideHl = true;
+              break;
+            }
+            p = p.parentNode;
+          }
+          if (!insideHl && (tNode.textContent || "").replace(/\u200B/g, "").trim().length > 0) {
+            hasPlainNonWhitespace = true;
+            break;
+          }
+          tNode = walker.nextNode() as Text | null;
+        }
+
+        if (!hasPlainNonWhitespace) {
+          const extracted = range.extractContents();
+          extracted.querySelectorAll(".prime-highlight, mark, code").forEach((el) => {
+            const parent = el.parentNode;
+            if (parent) {
+              while (el.firstChild) {
+                parent.insertBefore(el.firstChild, el);
+              }
+              el.remove();
+            }
+          });
+
+          const firstNode = extracted.firstChild;
+          const lastNode = extracted.lastChild;
+          range.insertNode(extracted);
+          cleanupEmptyHighlights();
+
+          if (firstNode && lastNode) {
+            const newRange = document.createRange();
+            newRange.setStartBefore(firstNode);
+            newRange.setEndAfter(lastNode);
+            sel.removeAllRanges();
+            sel.addRange(newRange);
+          }
+
+          handleInput(true);
+          pushHistorySnapshot(true);
+          checkActiveFormats();
+          return;
+        }
+      }
+
+      // Avoid highlighting a selection consisting purely of spaces
+      if (!range.toString().replace(/\u200B/g, "").trim()) {
+        return;
+      }
+    }
+
     // CASE 2: NOT inside a highlight -> APPLY
     if (range.collapsed) {
-      // No text selected: insert an empty prime-highlight badge with \u200B and position cursor inside
       const highlightEl = document.createElement("code");
       highlightEl.className = highlightClasses;
       const textNode = document.createTextNode("\u200B");
@@ -954,14 +1341,14 @@ export function NotesEditorModal({
       newRange.collapse(true);
       sel.removeAllRanges();
       sel.addRange(newRange);
-      handleInput();
+      handleInput(true);
+      pushHistorySnapshot(true);
       checkActiveFormats();
       return;
     } else {
-      // Text is selected -> wrap selection in prime-highlight badge
       const selectedContent = range.extractContents();
 
-      // Unwrap any existing nested highlight elements inside selectedContent to prevent double-highlighting / overlapping!
+      // Unwrap any existing nested highlight elements inside selectedContent to prevent double-highlighting / overlapping
       const nested = selectedContent.querySelectorAll(".prime-highlight, code, mark");
       nested.forEach((el) => {
         if (!el.closest(".code-block-container") && !el.closest("pre")) {
@@ -979,6 +1366,7 @@ export function NotesEditorModal({
       highlightEl.className = highlightClasses;
       highlightEl.appendChild(selectedContent);
       range.insertNode(highlightEl);
+      cleanupEmptyHighlights();
 
       // Merge with adjacent highlight siblings if touching to form a single continuous badge
       const prev = highlightEl.previousSibling;
@@ -1006,16 +1394,17 @@ export function NotesEditorModal({
         next.remove();
       }
 
-      // Keep newly highlighted text selected
       const newRange = document.createRange();
       newRange.selectNodeContents(highlightEl);
       sel.removeAllRanges();
       sel.addRange(newRange);
-      handleInput();
+      handleInput(true);
+      pushHistorySnapshot(true);
       checkActiveFormats();
       return;
     }
   };
+  toggleHighlightRef.current = toggleHighlight;
 
   // Export handlers (.md, .txt, .pdf)
   const exportAsMarkdown = () => {
@@ -1304,9 +1693,11 @@ export function NotesEditorModal({
     }
 
     // CASE 2: User is in normal notes -> Insert a new code block!
+    pushHistorySnapshot();
     const blockHtml = createCodeBlockHtml("", "code", false);
     document.execCommand("insertHTML", false, blockHtml);
-    handleInput();
+    handleInput(true);
+    pushHistorySnapshot(true);
     checkActiveFormats();
 
     // Focus inside newly inserted code-content
@@ -1332,6 +1723,7 @@ export function NotesEditorModal({
       e.stopPropagation();
       const container = deleteBtn.closest(".code-block-container") as HTMLElement;
       if (container) {
+        pushHistorySnapshot();
         let nextEl = container.nextElementSibling as HTMLElement;
         if (!nextEl || nextEl.tagName.toLowerCase() !== "p") {
           const p = document.createElement("p");
@@ -1341,7 +1733,8 @@ export function NotesEditorModal({
         }
         container.remove();
         nextEl.focus();
-        handleInput();
+        handleInput(true);
+        pushHistorySnapshot(true);
         checkActiveFormats();
       }
       return;
@@ -1601,7 +1994,8 @@ export function NotesEditorModal({
     let codeContentEl: HTMLElement | null = null;
 
     if (sel && sel.rangeCount > 0) {
-      let node: Node | null = sel.getRangeAt(0).commonAncestorContainer;
+      const r = sel.getRangeAt(0);
+      let node: Node | null = r.startContainer;
       while (node && node !== editorRef.current) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const el = node as HTMLElement;
@@ -1615,20 +2009,46 @@ export function NotesEditorModal({
       }
     }
 
-    // CASE 1: Inside an existing code block -> insert plain text into code
-    if (insideCode && codeContentEl) {
+    // CASE 1: Inside an existing code block -> splice normalized multiline text & re-highlight cleanly
+    if (insideCode && codeContentEl && sel && sel.rangeCount > 0) {
       e.preventDefault();
-      document.execCommand("insertText", false, text);
+      pushHistorySnapshot();
+
+      const range = sel.getRangeAt(0);
+      const cleanPaste = text.replace(/\r\n|\r|\u2028|\u2029/g, "\n");
+
+      // Delete any selected text first
+      if (!range.collapsed) {
+        range.deleteContents();
+      }
+
+      // Compute plain text before & after caret inside codeContentEl so browser spans/BRs never squash newlines
+      const preRange = document.createRange();
+      preRange.selectNodeContents(codeContentEl);
+      preRange.setEnd(range.startContainer, range.startOffset);
+      const beforeText = extractCodeText(preRange.cloneContents());
+
+      const postRange = document.createRange();
+      postRange.selectNodeContents(codeContentEl);
+      postRange.setStart(range.startContainer, range.startOffset);
+      const afterText = extractCodeText(postRange.cloneContents());
+
+      const newFullCode = beforeText + cleanPaste + afterText;
+      const container = codeContentEl.closest(".code-block-container");
+      const lang = container?.getAttribute("data-lang") || "code";
+
+      codeContentEl.innerHTML = highlightCodeHtml(newFullCode, lang);
+      setCodeCaretOffset(codeContentEl, beforeText.length + cleanPaste.length);
 
       // Update line count in header
-      const container = codeContentEl.closest(".code-block-container");
       const lineCountEl = container?.querySelector(".code-line-count");
       if (lineCountEl) {
-        const count = extractCodeText(codeContentEl).split("\n").length;
+        const count = newFullCode.trim() ? newFullCode.split("\n").length : 1;
         lineCountEl.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
       }
 
-      handleInput();
+      handleInput(true);
+      pushHistorySnapshot(true);
       checkActiveFormats();
       return;
     }
@@ -1638,6 +2058,7 @@ export function NotesEditorModal({
     const trimmed = text.trim();
     if (trimmed.startsWith("```") && trimmed.endsWith("```") && trimmed.length > 6) {
       e.preventDefault();
+      pushHistorySnapshot();
       const firstLineEnd = trimmed.indexOf("\n");
       let lang = "code";
       let code = "";
@@ -1649,7 +2070,8 @@ export function NotesEditorModal({
       }
       const blockHtml = createCodeBlockHtml(code, lang);
       document.execCommand("insertHTML", false, blockHtml);
-      handleInput();
+      handleInput(true);
+      pushHistorySnapshot(true);
       checkActiveFormats();
       return;
     }
@@ -1667,8 +2089,10 @@ export function NotesEditorModal({
     // If copied from MS Word or if it's plain text without HTML, paste clean text directly
     if (isOfficeHtml || !html) {
       e.preventDefault();
+      pushHistorySnapshot();
       document.execCommand("insertText", false, text);
-      handleInput();
+      handleInput(true);
+      pushHistorySnapshot(true);
       checkActiveFormats();
       return;
     }
@@ -1920,7 +2344,7 @@ export function NotesEditorModal({
             ref={editorRef}
             contentEditable
             suppressContentEditableWarning
-            onInput={handleInput}
+            onInput={() => handleInput()}
             onPaste={handlePaste}
             onClick={handleEditorClick}
             onKeyDown={handleEditorKeyDown}
@@ -1928,20 +2352,20 @@ export function NotesEditorModal({
             onMouseUp={checkActiveFormats}
             data-placeholder="Add your approach, time complexity, code or insight..."
             className={cn(
-              "w-full flex-1 bg-transparent text-sm sm:text-base text-zinc-100 focus:outline-none overflow-y-auto leading-relaxed select-text scrollbar-thin",
-              // Instant Visual Formatting Styles
-              "[&_h1]:text-lg [&_h1]:sm:text-xl [&_h1]:font-bold [&_h1]:text-white [&_h1]:mb-2 [&_h1]:mt-2",
-              "[&_h2]:text-base [&_h2]:sm:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h2]:mb-1.5 [&_h2]:mt-2",
+              "w-full flex-1 bg-transparent text-sm sm:text-base text-zinc-100 focus:outline-none overflow-y-auto leading-snug select-text scrollbar-thin",
+              // Instant Visual Formatting Styles (compact line spacing + diagram-safe whitespace)
+              "[&_h1]:text-lg [&_h1]:sm:text-xl [&_h1]:font-bold [&_h1]:text-white [&_h1]:mb-1 [&_h1]:mt-1.5",
+              "[&_h2]:text-base [&_h2]:sm:text-lg [&_h2]:font-semibold [&_h2]:text-white [&_h2]:mb-0.5 [&_h2]:mt-1",
               "[&_b]:font-bold [&_b]:text-white [&_strong]:font-bold [&_strong]:text-white",
               "[&_i]:italic [&_i]:text-violet-200 [&_em]:italic [&_em]:text-violet-200",
               "[&_u]:underline [&_u]:underline-offset-2 [&_u]:decoration-amber-400/80",
-              "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ul]:space-y-1",
-              "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_ol]:space-y-1",
-              "[&_p]:my-1.5 [&_p]:text-sm [&_p]:sm:text-base [&_p]:text-zinc-100",
+              "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-0.5 [&_ul]:space-y-0",
+              "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-0.5 [&_ol]:space-y-0",
+              "[&_p]:my-0 [&_p]:min-h-[1.35em] [&_p]:leading-snug [&_p]:whitespace-pre-wrap [&_p]:text-sm [&_p]:sm:text-base [&_p]:text-zinc-100",
               "[&_code]:bg-amber-400/25 [&_code]:border [&_code]:border-amber-400/50 [&_code]:text-amber-200 [&_code]:shadow-[0_0_10px_rgba(245,158,11,0.2)] [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded-md [&_code]:text-[12px] [&_code]:font-mono [&_code]:font-semibold [&_code]:mx-0.5",
               // Collapsible Code Block Container Styles
-              "[&_.code-block-container]:my-3 [&_.code-block-container]:rounded-xl [&_.code-block-container]:border [&_.code-block-container]:border-white/10 [&_.code-block-container]:bg-[#080914] [&_.code-block-container]:overflow-hidden [&_.code-block-container]:shadow-md",
-              "[&_.code-content]:p-3 [&_.code-content]:text-xs [&_.code-content]:font-mono [&_.code-content]:text-cyan-200 [&_.code-content]:leading-relaxed [&_.code-content]:overflow-x-auto [&_.code-content]:whitespace-pre [&_.code-content]:outline-none",
+              "[&_.code-block-container]:my-2 [&_.code-block-container]:rounded-xl [&_.code-block-container]:border [&_.code-block-container]:border-white/10 [&_.code-block-container]:bg-[#080914] [&_.code-block-container]:overflow-hidden [&_.code-block-container]:shadow-md",
+              "[&_.code-content]:p-3 [&_.code-content]:min-h-[3.25rem] [&_.code-content]:text-xs [&_.code-content]:font-mono [&_.code-content]:text-cyan-200 [&_.code-content]:leading-relaxed [&_.code-content]:overflow-x-auto [&_.code-content]:whitespace-pre [&_.code-content]:outline-none",
               // Clean placeholder when empty
               "empty:before:content-[attr(data-placeholder)] empty:before:text-zinc-600 empty:before:pointer-events-none"
             )}

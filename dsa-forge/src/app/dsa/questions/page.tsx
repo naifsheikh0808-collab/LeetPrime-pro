@@ -143,11 +143,7 @@ function QuestionsPageContent() {
   const [search, setSearch] = useState("");
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty[]>([]);
   const [selectedPattern, setSelectedPattern] = useState("");
-  const [selectedStatus, setSelectedStatus] = useState<"ALL" | ProgressStatus>(
-    statusParam === "solved" || statusParam === "attempted" || statusParam === "revise" || statusParam === "todo"
-      ? statusParam
-      : "ALL"
-  );
+  const [selectedStatus, setSelectedStatus] = useState<"ALL" | ProgressStatus>("ALL");
   const [sortBy, setSortBy] = useState<
     "priority" | "difficulty" | "title" | "recency" | "pedagogical"
   >(patternParam ? "pedagogical" : "priority");
@@ -182,6 +178,8 @@ function QuestionsPageContent() {
       statusParam === "todo"
     ) {
       setSelectedStatus(statusParam);
+    } else {
+      setSelectedStatus("ALL");
     }
   }, [statusParam]);
 

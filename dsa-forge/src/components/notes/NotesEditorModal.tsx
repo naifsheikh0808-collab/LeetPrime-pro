@@ -449,13 +449,16 @@ function htmlToMarkdown(html: string): string {
     const wrapPerLine = (raw: string, open: string, close: string) => {
       const cleaned = raw.replace(/\u200B/g, "");
       if (!cleaned.trim()) return "";
+      const wrapOne = (line: string) => {
+        if (!line.trim()) return line;
+        const lead = line.match(/^\s*/)?.[0] || "";
+        const trail = line.match(/\s*$/)?.[0] || "";
+        return `${lead}${open}${line.trim()}${close}${trail}`;
+      };
       if (!cleaned.includes("\n")) {
-        return `${open}${cleaned.trim()}${close}`;
+        return wrapOne(cleaned);
       }
-      return cleaned
-        .split("\n")
-        .map((line) => (line.trim() ? `${open}${line.trim()}${close}` : ""))
-        .join("\n");
+      return cleaned.split("\n").map(wrapOne).join("\n");
     };
 
     // Inline code or Prime AI highlight
@@ -603,9 +606,10 @@ function htmlToMarkdown(html: string): string {
 function markdownToPlainText(md: string): string {
   if (!md) return "";
   return md
-    // Clean code blocks: include the full code lines with clean text dividers
-    .replace(/```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)```/g, (_match, code) => {
-      return `\n${"-".repeat(25)} Code ${"-".repeat(25)}\n${code.trim()}\n${"-".repeat(56)}\n`;
+    // Clean code blocks: include the full code lines with clean text dividers (preserve indentation)
+    .replace(/```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)```/g, (_match, code: string) => {
+      const cleanCode = code.replace(/^\n+|\s+$/g, "");
+      return `\n${"-".repeat(25)} Code ${"-".repeat(25)}\n${cleanCode}\n${"-".repeat(56)}\n`;
     })
     // Headings
     .replace(/^#{1,6}\s+(.*)$/gm, "$1")
@@ -621,7 +625,418 @@ function markdownToPlainText(md: string): string {
     .replace(/<[^>]+>/g, "")
     // Clean redundant blank lines
     .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/^(?:\r?\n)+|\s+$/g, "");
+}
+
+function isDiagramLineText(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^#{1,6}\s/.test(trimmed) || trimmed.startsWith("```")) return false;
+  if (/[┌┐└┘├┤┬┴┼─│═║╔╗╚╝╠╣╦╩╬▼▲►◄]/.test(line)) return true;
+  if (/_{3,}|-{3,}/.test(line)) return true;
+  if (/(?:^\s*\||\|\s*$|\S\s*\|\s*\S|\|\s{2,})/.test(line)) return true;
+  if (/^\s{2,}\S/.test(line)) return true;
+  if (/\S\s{3,}\S/.test(line)) return true;
+  return false;
+}
+
+function hasExplicitDiagramStructure(line: string): boolean {
+  return /_{3,}|-{3,}|[┌┐└┘├┤┬┴┼─│═║╔╗╚╝╠╣╦╩╬▼▲►◄]|^\s*\|/.test(line);
+}
+
+function escapeHtmlAttr(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Exports editor content as Markdown, Plain Text, or Print-Ready PDF HTML while
+ * pixel-realigning mindmaps/ASCII diagrams from the editor's proportional font
+ * to exact monospace columns.
+ */
+function exportNotesFromEditor(editorEl: HTMLElement, mode: "md" | "txt" | "pdfHtml"): string {
+  // Determine monospace column pixel width using rendered underscore/dash runs in the editor
+  let colWidth = 0;
+  const widthSamples: number[] = [];
+  const pNodes = Array.from(editorEl.querySelectorAll("p"));
+  for (const p of pNodes) {
+    const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    let tn = walker.nextNode() as Text | null;
+    while (tn) {
+      const m = (tn.textContent || "").match(/_{3,}|-{3,}/);
+      if (m && m.index !== undefined) {
+        try {
+          const r = document.createRange();
+          r.setStart(tn, m.index);
+          r.setEnd(tn, m.index + m[0].length);
+          const w = r.getBoundingClientRect().width;
+          if (w > 0) widthSamples.push(w / m[0].length);
+        } catch {}
+      }
+      tn = walker.nextNode() as Text | null;
+    }
+    if (widthSamples.length >= 3) break;
+  }
+  if (widthSamples.length > 0) {
+    colWidth = widthSamples.reduce((a, b) => a + b, 0) / widthSamples.length;
+  } else {
+    try {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.font = window.getComputedStyle(editorEl).font || "16px sans-serif";
+        colWidth = ctx.measureText("_").width || 7.5;
+      }
+    } catch {}
+    if (!colWidth || colWidth <= 0) colWidth = 7.5;
+  }
+
+  interface MonoToken {
+    kind: "space" | "text" | "hl";
+    text: string;
+  }
+
+  interface BuiltMonoLine {
+    plainText: string;
+    tokens: MonoToken[];
+  }
+
+  // Measure and split a single <p>/<div> into visual lines with exact monospace column tokens
+  const buildMonoLinesForBlock = (blockEl: HTMLElement): BuiltMonoLine[] => {
+    const blockRect = blockEl.getBoundingClientRect();
+    const blockLeft = blockRect.left;
+
+    interface VisualPart {
+      kind: "text" | "hl";
+      text: string;
+      leftPx: number;
+    }
+    interface VisualSeg {
+      parts: VisualPart[];
+      leftPx: number;
+    }
+    const visualLines: VisualSeg[][] = [[]];
+    let currentSeg: VisualSeg | null = null;
+
+    const flushSeg = () => {
+      if (currentSeg && currentSeg.parts.length > 0) {
+        visualLines[visualLines.length - 1].push(currentSeg);
+      }
+      currentSeg = null;
+    };
+
+    const appendPart = (kind: "text" | "hl", txt: string, leftPx: number) => {
+      if (!txt) return;
+      if (!currentSeg) {
+        currentSeg = { parts: [{ kind, text: txt, leftPx }], leftPx };
+      } else {
+        const last = currentSeg.parts[currentSeg.parts.length - 1];
+        if (last && last.kind === "text" && kind === "text") {
+          last.text += txt;
+        } else {
+          currentSeg.parts.push({ kind, text: txt, leftPx });
+        }
+      }
+    };
+
+    const walkLineNodes = (node: Node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const tn = node as Text;
+        const raw = (tn.textContent || "").replace(/\u200B/g, "").replace(/\u00A0/g, " ");
+        if (!raw) return;
+
+        // Split on runs of 2+ spaces (or leading spaces only at start of line when !currentSeg)
+        const gapRegex = currentSeg ? /\s{2,}/g : /\s{2,}|^\s+/g;
+        let idx = 0;
+        let match: RegExpExecArray | null;
+        while ((match = gapRegex.exec(raw)) !== null) {
+          if (match.index > idx) {
+            const sub = raw.slice(idx, match.index);
+            let leftPx = 0;
+            try {
+              const r = document.createRange();
+              r.setStart(tn, idx);
+              r.setEnd(tn, match.index);
+              leftPx = r.getBoundingClientRect().left - blockLeft;
+            } catch {}
+            appendPart("text", sub, leftPx);
+          }
+          flushSeg();
+          idx = match.index + match[0].length;
+        }
+        if (idx < raw.length) {
+          const sub = raw.slice(idx);
+          let leftPx = 0;
+          try {
+            const r = document.createRange();
+            r.setStart(tn, idx);
+            r.setEnd(tn, raw.length);
+            leftPx = r.getBoundingClientRect().left - blockLeft;
+          } catch {}
+          appendPart("text", sub, leftPx);
+        }
+        return;
+      }
+
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const el = node as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+
+      if (tag === "br") {
+        flushSeg();
+        visualLines.push([]);
+        return;
+      }
+
+      if (el.classList.contains("prime-highlight") || tag === "code" || tag === "mark") {
+        const inner = (el.textContent || "").replace(/\u200B/g, "").replace(/\u00A0/g, " ").trim();
+        if (inner) {
+          const leftPx = el.getBoundingClientRect().left - blockLeft;
+          appendPart("hl", inner, leftPx);
+        }
+        return;
+      }
+
+      Array.from(el.childNodes).forEach(walkLineNodes);
+    };
+
+    Array.from(blockEl.childNodes).forEach(walkLineNodes);
+    flushSeg();
+
+    return visualLines.map((segs) => {
+      if (segs.length === 0) return { plainText: "", tokens: [] };
+      const tokens: MonoToken[] = [];
+      let plainOut = "";
+      let curCol = 0;
+
+      for (const seg of segs) {
+        // Trim leading spaces on first text part of segment
+        const parts = [...seg.parts];
+        if (parts[0] && parts[0].kind === "text") {
+          const stripped = parts[0].text.replace(/^\s+/, "");
+          if (!stripped) {
+            parts.shift();
+          } else {
+            parts[0] = { ...parts[0], text: stripped };
+          }
+        }
+        if (parts.length === 0) continue;
+
+        const minGap = curCol === 0 ? 0 : 2;
+        const targetCol = Math.max(
+          curCol === 0 ? 0 : curCol + minGap,
+          Math.round(seg.leftPx / colWidth)
+        );
+        if (targetCol > curCol) {
+          const sp = " ".repeat(targetCol - curCol);
+          tokens.push({ kind: "space", text: sp });
+          plainOut += sp;
+          curCol = targetCol;
+        }
+
+        for (let pIdx = 0; pIdx < parts.length; pIdx++) {
+          let pText = parts[pIdx].text;
+          if (pIdx === parts.length - 1 && parts[pIdx].kind === "text") {
+            pText = pText.replace(/\s+$/, "");
+          }
+          if (!pText) continue;
+          if (parts[pIdx].kind === "hl") {
+            tokens.push({ kind: "hl", text: pText });
+            const bracketed = `[${pText}]`;
+            plainOut += bracketed;
+            curCol += bracketed.length;
+          } else {
+            tokens.push({ kind: "text", text: pText });
+            plainOut += pText;
+            curCol += pText.length;
+          }
+        }
+      }
+
+      return { plainText: plainOut.trimEnd(), tokens };
+    });
+  };
+
+  // Collect line entries across top-level editor children
+  interface ExportEntry {
+    isDiagramCandidate: boolean;
+    isBlank: boolean;
+    isFixedBlock: boolean;
+    mdText: string;
+    monoText: string;
+    monoTokens: MonoToken[];
+    rawHtml: string;
+  }
+  const entries: ExportEntry[] = [];
+
+  const processChild = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = (node.textContent || "").replace(/\u200B/g, "").replace(/\u00A0/g, " ");
+      if (t.trim()) {
+        entries.push({
+          isDiagramCandidate: isDiagramLineText(t),
+          isBlank: false,
+          isFixedBlock: false,
+          mdText: t.trimEnd(),
+          monoText: t.trimEnd(),
+          monoTokens: [{ kind: "text", text: t.trimEnd() }],
+          rawHtml: `<p>${escapeHtmlAttr(t.trimEnd())}</p>`,
+        });
+      }
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as HTMLElement;
+    const tag = el.tagName.toLowerCase();
+
+    if (
+      el.classList.contains("code-block-container") ||
+      tag === "pre" ||
+      tag === "h1" ||
+      tag === "h2" ||
+      tag === "h3" ||
+      tag === "ul" ||
+      tag === "ol"
+    ) {
+      const singleMd = htmlToMarkdown(el.outerHTML);
+      if (singleMd) {
+        entries.push({
+          isDiagramCandidate: false,
+          isBlank: false,
+          isFixedBlock: true,
+          mdText: singleMd,
+          monoText: markdownToPlainText(singleMd),
+          monoTokens: [],
+          rawHtml: el.outerHTML.replace(/\u200B/g, ""),
+        });
+      }
+      return;
+    }
+
+    if (tag === "div" && el.querySelector("p, h1, h2, h3, ul, ol, pre, .code-block-container")) {
+      Array.from(el.childNodes).forEach(processChild);
+      return;
+    }
+
+    // Paragraph or generic inline div
+    const textContent = (el.textContent || "").replace(/\u200B/g, "");
+    const isBlank =
+      (!textContent.trim() && el.querySelectorAll("br").length > 0) ||
+      (!textContent.trim() && el.children.length === 0);
+
+    if (isBlank) {
+      entries.push({
+        isDiagramCandidate: false,
+        isBlank: true,
+        isFixedBlock: false,
+        mdText: "",
+        monoText: "",
+        monoTokens: [],
+        rawHtml: "<p><br></p>",
+      });
+      return;
+    }
+
+    const mdBlock = htmlToMarkdown(el.outerHTML);
+    const mdLines = mdBlock.split("\n");
+    const monoLines = buildMonoLinesForBlock(el);
+    const lineCount = Math.max(mdLines.length, monoLines.length);
+    const cleanElHtml = el.outerHTML.replace(/\u200B/g, "");
+
+    for (let i = 0; i < lineCount; i++) {
+      const mdL = mdLines[i] ?? "";
+      const monoObj = monoLines[i] ?? { plainText: mdL, tokens: [{ kind: "text" as const, text: mdL }] };
+      const plainCheck = monoObj.plainText || mdL;
+      entries.push({
+        isDiagramCandidate: isDiagramLineText(plainCheck),
+        isBlank: !plainCheck.trim(),
+        isFixedBlock: false,
+        mdText: mdL,
+        monoText: monoObj.plainText,
+        monoTokens: monoObj.tokens,
+        rawHtml: i === 0 ? cleanElHtml : "",
+      });
+    }
+  };
+
+  Array.from(editorEl.childNodes).forEach(processChild);
+
+  // Group contiguous diagram candidates into diagram blocks
+  const outputChunks: string[] = [];
+  let idx = 0;
+  while (idx < entries.length) {
+    if (entries[idx].isDiagramCandidate) {
+      let end = idx + 1;
+      while (end < entries.length && entries[end].isDiagramCandidate) {
+        end++;
+      }
+      const run = entries.slice(idx, end);
+      const isTrueDiagram =
+        run.length >= 2 || run.some((item) => hasExplicitDiagramStructure(item.monoText));
+
+      if (isTrueDiagram) {
+        if (mode === "pdfHtml") {
+          const maxLen = run.reduce((m, r) => Math.max(m, r.monoText.length), 0);
+          const diagramFontSize = maxLen > 92 ? "9.5px" : maxLen > 78 ? "10.5px" : "11.5px";
+          const htmlLines = run.map((r) => {
+            if (r.monoTokens.length === 0) return escapeHtmlAttr(r.monoText);
+            return r.monoTokens
+              .map((tok) => {
+                if (tok.kind === "space") return tok.text;
+                if (tok.kind === "hl") {
+                  const chWidth = tok.text.length + 2;
+                  return `<span class="pdf-diagram-hl" style="width:${chWidth}ch;">${escapeHtmlAttr(tok.text)}</span>`;
+                }
+                return escapeHtmlAttr(tok.text);
+              })
+              .join("");
+          });
+          outputChunks.push(
+            `<pre class="pdf-diagram" style="font-size:${diagramFontSize};">${htmlLines.join("\n")}</pre>`
+          );
+        } else {
+          const monoBlock = run.map((r) => r.monoText).join("\n");
+          if (mode === "md") {
+            outputChunks.push(`\`\`\`text\n${monoBlock}\n\`\`\``);
+          } else {
+            outputChunks.push(monoBlock);
+          }
+        }
+        idx = end;
+        continue;
+      }
+    }
+
+    const item = entries[idx];
+    if (mode === "pdfHtml") {
+      if (item.rawHtml) {
+        outputChunks.push(item.rawHtml);
+      } else if (item.isBlank) {
+        outputChunks.push("<p><br></p>");
+      } else if (item.monoText) {
+        outputChunks.push(`<p>${escapeHtmlAttr(item.monoText)}</p>`);
+      }
+    } else if (item.isFixedBlock) {
+      outputChunks.push(mode === "md" ? item.mdText : item.monoText);
+    } else if (item.isBlank) {
+      outputChunks.push("");
+    } else {
+      outputChunks.push(mode === "md" ? item.mdText : markdownToPlainText(item.mdText));
+    }
+    idx++;
+  }
+
+  if (mode === "pdfHtml") {
+    return outputChunks.join("");
+  }
+
+  return outputChunks
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^(?:\r?\n)+|\s+$/g, "");
 }
 
 export function NotesEditorModal({
@@ -1409,7 +1824,7 @@ export function NotesEditorModal({
   // Export handlers (.md, .txt, .pdf)
   const exportAsMarkdown = () => {
     try {
-      const md = editorRef.current ? htmlToMarkdown(editorRef.current.innerHTML) : initialNotes;
+      const md = editorRef.current ? exportNotesFromEditor(editorRef.current, "md") : initialNotes;
       const header = `# ${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}\n\n*Exported from LeetPrime*\n\n---\n\n`;
       const fullContent = header + md;
 
@@ -1436,8 +1851,9 @@ export function NotesEditorModal({
 
   const exportAsText = () => {
     try {
-      const md = editorRef.current ? htmlToMarkdown(editorRef.current.innerHTML) : initialNotes;
-      const plain = markdownToPlainText(md);
+      const plain = editorRef.current
+        ? exportNotesFromEditor(editorRef.current, "txt")
+        : markdownToPlainText(initialNotes);
       const header = `${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}\nLeetPrime Notes\n${"-".repeat(40)}\n\n`;
       const fullContent = header + plain;
 
@@ -1466,7 +1882,16 @@ export function NotesEditorModal({
     try {
       setIsExportOpen(false);
       const titleText = `${problemExternalId ? `#${problemExternalId} - ` : ""}${problemTitle}`;
-      const editorHtml = editorRef.current ? editorRef.current.innerHTML : "";
+      const editorHtml = editorRef.current
+        ? exportNotesFromEditor(editorRef.current, "pdfHtml")
+        : "";
+
+      const computedStyle = editorRef.current ? window.getComputedStyle(editorRef.current) : null;
+      const printFontFamily =
+        computedStyle?.fontFamily ||
+        "'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif";
+      const parsedFontSize = parseFloat(computedStyle?.fontSize || "15");
+      const printFontSize = `${Math.min(16, Math.max(13, Number.isFinite(parsedFontSize) ? parsedFontSize : 15))}px`;
 
       const iframe = document.createElement("iframe");
       iframe.style.position = "fixed";
@@ -1486,23 +1911,26 @@ export function NotesEditorModal({
         <head>
           <meta charset="utf-8">
           <title>${titleText} - LeetPrime Notes</title>
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" />
           <style>
             @page {
-              margin: 16mm 14mm;
+              margin: 14mm 12mm;
               size: A4;
             }
             body {
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+              font-family: ${printFontFamily};
               color: #0f172a;
               background: #ffffff;
-              line-height: 1.6;
+              line-height: 1.375;
               padding: 0;
               margin: 0;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
             }
             .header {
               border-bottom: 2px solid #e2e8f0;
-              padding-bottom: 12px;
-              margin-bottom: 20px;
+              padding-bottom: 10px;
+              margin-bottom: 16px;
             }
             .header-tag {
               display: inline-block;
@@ -1520,7 +1948,7 @@ export function NotesEditorModal({
             h1 {
               font-size: 20px;
               font-weight: 800;
-              margin: 4px 0 6px 0;
+              margin: 4px 0 4px 0;
               color: #0f172a;
             }
             .meta {
@@ -1528,36 +1956,66 @@ export function NotesEditorModal({
               color: #64748b;
             }
             h2 {
-              font-size: 16px;
+              font-size: 17px;
               font-weight: 700;
               color: #1e293b;
-              margin-top: 18px;
-              margin-bottom: 8px;
+              margin: 10px 0 4px 0;
             }
             h3 {
-              font-size: 13.5px;
+              font-size: 14px;
               font-weight: 600;
               color: #334155;
+              margin: 6px 0 2px 0;
             }
             p {
-              margin: 8px 0;
-              font-size: 13px;
+              margin: 0;
+              min-height: 1.35em;
+              line-height: 1.375;
+              font-size: ${printFontSize};
               color: #1e293b;
+              white-space: pre-wrap;
+              word-break: break-word;
             }
             ul, ol {
               padding-left: 22px;
-              margin: 8px 0;
-              font-size: 13px;
+              margin: 4px 0;
+              font-size: ${printFontSize};
             }
             li {
-              margin: 4px 0;
+              margin: 1px 0;
+              line-height: 1.375;
+              white-space: pre-wrap;
+            }
+            pre.pdf-diagram {
+              font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              line-height: 1.5;
+              white-space: pre;
+              background: #f8fafc !important;
+              border: 1px solid #e2e8f0;
+              border-radius: 10px;
+              padding: 12px 14px;
+              margin: 6px 0;
+              color: #0f172a;
+              overflow: hidden;
+              page-break-inside: avoid;
+            }
+            .pdf-diagram-hl {
+              display: inline-block;
+              box-sizing: border-box;
+              text-align: center;
+              background: #fef3c7 !important;
+              border: 1px solid #f59e0b !important;
+              color: #92400e !important;
+              border-radius: 4px;
+              font-weight: 600;
+              line-height: 1.28;
             }
             .code-block-container {
               border: 1px solid #e2e8f0;
               border-radius: 8px;
               background: #0f172a !important;
               color: #f8fafc !important;
-              margin: 12px 0;
+              margin: 10px 0;
               overflow: hidden;
               page-break-inside: avoid;
             }
@@ -1578,8 +2036,8 @@ export function NotesEditorModal({
               background: #0f172a !important;
               color: #e2e8f0 !important;
               padding: 12px;
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-              font-size: 11px;
+              font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 11.5px;
               line-height: 1.5;
               margin: 0;
               overflow-x: auto;
@@ -1597,11 +2055,12 @@ export function NotesEditorModal({
               border: 1px solid #f59e0b !important;
               color: #92400e !important;
               padding: 2px 6px;
-              border-radius: 4px;
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-              font-size: 11.5px;
+              margin: 0 2px;
+              border-radius: 6px;
+              font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 12px;
               font-weight: 600;
-              display: inline-block;
+              display: inline;
             }
             u {
               text-decoration: underline;
@@ -1616,7 +2075,7 @@ export function NotesEditorModal({
               color: #334155;
             }
             .footer {
-              margin-top: 30px;
+              margin-top: 24px;
               border-top: 1px solid #e2e8f0;
               padding-top: 8px;
               font-size: 10px;
@@ -1643,13 +2102,25 @@ export function NotesEditorModal({
       doc.write(printHtml);
       doc.close();
 
-      setTimeout(() => {
+      const triggerPrint = () => {
         iframe.contentWindow?.focus();
         iframe.contentWindow?.print();
         setTimeout(() => {
-          document.body.removeChild(iframe);
+          if (iframe.parentNode) {
+            document.body.removeChild(iframe);
+          }
         }, 1200);
-      }, 250);
+      };
+
+      const fontReady = doc.fonts?.ready;
+      if (fontReady) {
+        Promise.race([
+          fontReady,
+          new Promise((resolve) => setTimeout(resolve, 900)),
+        ]).then(() => setTimeout(triggerPrint, 80));
+      } else {
+        setTimeout(triggerPrint, 300);
+      }
     } catch (err) {
       console.error("[NotesEditorModal] Export PDF error:", err);
     }
